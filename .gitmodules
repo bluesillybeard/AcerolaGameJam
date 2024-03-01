@@ -1,0 +1,9 @@
+[submodule "ZRender"]
+	path = ZRender
+	url = https://github.com/bluesillybeard/ZRender
+[submodule "ZEngine"]
+	path = ZEngine
+	url = https://github.com/bluesillybeard/ZEngine
+[submodule "zlm"]
+	path = zlm
+	url = https://github.com/ziglibs/zlm.git
