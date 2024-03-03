@@ -76,22 +76,22 @@ const AcerolaGameJamSystem = struct {
 
     pub fn update(this: *@This(), args: zrender.OnUpdateEventArgs) void {
         this.timeSinceStart += args.delta;
-        //const renderSystem = args.registries.globalRegistry.getRegister(zrender.ZRenderSystem).?;
+        const renderSystem = args.registries.globalRegistry.getRegister(zrender.ZRenderSystem).?;
         // create the zlm mat4
         var transform = zlm.Mat4.identity;
         // object transformations
-        const angle = @as(f32, @floatFromInt(this.timeSinceStart)) / std.time.us_per_s;
-        std.debug.print("time: {}\n", .{this.timeSinceStart});
+        const angle = @as(f32, @floatFromInt(this.timeSinceStart)) / (std.time.us_per_s * 10);
         transform = transform.mul(zlm.Mat4.createAngleAxis(zlm.Vec3.unitZ, angle));
         // TODO: define camera parameters elsewhere
-        //const resolution = renderSystem.getScreenResolution();
+        const resolution = renderSystem.getWindowResolution();
         // Gotta say, Zig's float-int casting is such a pain
-        //const aspect: f32 = @as(f32, @floatFromInt(resolution.width)) / @as(f32, @floatFromInt(resolution.height));
-        //const cameraCenter = zlm.vec2(0, 0);
-        //const cameraVerticalRadius: f32 = 0.5;
-        //const cameraHorizontalRadius: f32 =
+        const aspect: f32 = @as(f32, @floatFromInt(resolution.height)) / @as(f32, @floatFromInt(resolution.width));
+        const cameraCenter = zlm.vec2(0, 0);
+        const cameraRadiusX: f32 = 1;
+        const cameraRadiusY: f32 = cameraRadiusX * aspect;
         // camera transformations
-        //transform = transform.mul(zlm.Mat4.createOrthogonal(cameraCenter, right: Real, bottom: Real, top: Real, near: Real, far: Real))
+        transform = transform.mul(zlm.Mat4.createLook(zlm.Vec3{ .x = cameraCenter.x, .y = cameraCenter.y, .z = 0.5 }, zlm.Vec3.unitZ, zlm.Vec3.unitY));
+        transform = transform.mul(zlm.Mat4.createOrthogonal(-cameraRadiusX, cameraRadiusX, -cameraRadiusY, cameraRadiusY, 0.01, 10));
         const renderComponent = args.registries.globalEcsRegistry.get(zrender.RenderComponent, this.entity);
         renderComponent.uniforms[0] = .{ .mat4 = zlmToZrenderMat4(transform) };
     }
