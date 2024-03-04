@@ -4,6 +4,10 @@ const zrender = @import("zrender");
 const zlm = @import("zlm");
 const ecs = @import("ecs");
 
+// All spatial units are in screens per second.
+// The viewport of the player is normalized so the smaller dimetion is 1, and the larger dimention is >=1.
+const gravity = -1.0;
+
 // there is only one shader so only one type of vertex is needed
 const Vertex = struct {
     pub const attributes = [_]zrender.NamedAttribute{
@@ -15,6 +19,21 @@ const Vertex = struct {
     z: f32,
     texX: f32,
     texY: f32,
+};
+
+const FruitComponent = struct {
+    uniforms: [2] zrender.Uniform,
+    fruit: Fruit,
+};
+
+const Fruit = struct {
+    xPos: f32,
+    yPos: f32,
+    angle: f32,
+    xVel: f32,
+    yVel: f32,
+    aVel: f32,
+    scale: f32,
 };
 
 // A "normal" ZEngine game should split functionality across many systems for better organization.
@@ -37,8 +56,6 @@ const AcerolaGameJamSystem = struct {
             .quadMesh = undefined,
             .texture = undefined,
             .pipeline = undefined,
-            .uniforms = undefined,
-            .entity = undefined,
         };
     }
 
@@ -61,39 +78,100 @@ const AcerolaGameJamSystem = struct {
             0, 1, 2, 2, 3, 0,
         }, this.pipeline);
 
-        const texture = try renderSystem.loadTexture(@embedFile("assets/fruit.png"));
-        this.uniforms[0] = .{ .mat4 = zrender.Mat4.identity };
-        this.uniforms[1] = .{ .texture = texture };
-        this.entity = registries.globalEcsRegistry.create();
-        registries.globalEcsRegistry.add(this.entity, zrender.RenderComponent{
+        this.texture = try renderSystem.loadTexture(@embedFile("assets/fruit.png"));
+
+        renderSystem.onUpdate.sink().connectBound(this, "update");
+        renderSystem.onMousePress.sink().connectBound(this, "onClick");
+        _ = settings;
+    }
+
+    fn spawnFruit(this: *@This(), registries: *zengine.RegistrySet, texture: zrender.TextureHandle, fruit: Fruit) void {
+        const entity = registries.globalEcsRegistry.create();
+        registries.globalEcsRegistry.add(entity, FruitComponent {
+            .uniforms = [_]zrender.Uniform{.{.mat4 = zrender.Mat4.identity}, .{.texture = texture}},
+            .fruit = fruit,
+        });
+        const fruitComponent = registries.globalEcsRegistry.get(FruitComponent, entity);
+        registries.globalEcsRegistry.add(entity, zrender.RenderComponent{
             .pipeline = this.pipeline,
             .mesh = this.quadMesh,
-            .uniforms = &this.uniforms,
+            .uniforms = &fruitComponent.uniforms,
         });
-        renderSystem.onUpdate.sink().connectBound(this, "update");
-        _ = settings;
     }
 
     pub fn update(this: *@This(), args: zrender.OnUpdateEventArgs) void {
         this.timeSinceStart += args.delta;
+        // Every time @as(@floatFromInt) is needed, I am reminding you how silly this is
+        const deltaSeconds: f32 = @as(f32, @floatFromInt(args.delta)) / std.time.us_per_s;
         const renderSystem = args.registries.globalRegistry.getRegister(zrender.ZRenderSystem).?;
-        // create the zlm mat4
-        var transform = zlm.Mat4.identity;
-        // object transformations
-        const angle = @as(f32, @floatFromInt(this.timeSinceStart)) / (std.time.us_per_s * 10);
-        transform = transform.mul(zlm.Mat4.createAngleAxis(zlm.Vec3.unitZ, angle));
+
+        if(this.shouldSpawnFruit) {
+            this.shouldSpawnFruit = false;
+            std.debug.print("Spawned fruit\n", .{});
+            this.spawnFruit(args.registries, this.texture, Fruit {
+                .angle = 0,
+                .aVel = 0.5,
+                .scale = 0.5,
+                .xPos = 0.5,
+                .yPos = 0,
+                .xVel = 0,
+                .yVel = 1,
+            });
+        }
+        
         // TODO: define camera parameters elsewhere
         const resolution = renderSystem.getWindowResolution();
         // Gotta say, Zig's float-int casting is such a pain
         const aspect: f32 = @as(f32, @floatFromInt(resolution.height)) / @as(f32, @floatFromInt(resolution.width));
         const cameraCenter = zlm.vec2(0, 0);
-        const cameraRadiusX: f32 = 1;
-        const cameraRadiusY: f32 = cameraRadiusX * aspect;
+        
+        var cameraRadiusX: f32 = 1;
+        var cameraRadiusY: f32 = cameraRadiusX * aspect;
+        if(resolution.width > resolution.height) {
+            cameraRadiusY = 1;
+            cameraRadiusX = cameraRadiusY / aspect;
+        }
         // camera transformations
-        transform = transform.mul(zlm.Mat4.createLook(zlm.Vec3{ .x = cameraCenter.x, .y = cameraCenter.y, .z = 0.5 }, zlm.Vec3.unitZ, zlm.Vec3.unitY));
-        transform = transform.mul(zlm.Mat4.createOrthogonal(-cameraRadiusX, cameraRadiusX, -cameraRadiusY, cameraRadiusY, 0.01, 10));
-        const renderComponent = args.registries.globalEcsRegistry.get(zrender.RenderComponent, this.entity);
-        renderComponent.uniforms[0] = .{ .mat4 = zlmToZrenderMat4(transform) };
+        var cameraTransform = zlm.Mat4.identity;
+        cameraTransform = zlm.Mat4.createOrthogonal(-cameraRadiusX, cameraRadiusX, -cameraRadiusY, cameraRadiusY, 0.01, 10).mul(cameraTransform);
+        cameraTransform = zlm.Mat4.createLook(zlm.Vec3{ .x = cameraCenter.x, .y = cameraCenter.y, .z = 0.5 }, zlm.Vec3.unitZ, zlm.Vec3.unitY).mul(cameraTransform);
+        const view = args.registries.globalEcsRegistry.basicView(FruitComponent);
+        var iterator = view.entityIterator();
+        while(iterator.next()) |entity| {
+            // explicit type hint because zls isn't very good at comptime stuff
+            const fruit: *FruitComponent = view.get(entity);
+            const renderComponent = args.registries.globalEcsRegistry.get(zrender.RenderComponent, entity);
+            // Update the fruit
+            fruit.fruit.yVel += gravity * deltaSeconds;
+            fruit.fruit.yPos += fruit.fruit.yVel * deltaSeconds;
+            fruit.fruit.xPos += fruit.fruit.xVel * deltaSeconds;
+            fruit.fruit.angle += fruit.fruit.aVel * deltaSeconds;
+
+            // Update the render component with the new fruit data
+            const objectTransform = getFruitTransform(fruit.fruit);
+            const transform = objectTransform.mul(cameraTransform);
+            // Sometimes, the renderComponent's reference to uniforms is invalidated when the ECS expands things,
+            // So, set the render component to the correct one
+            renderComponent.uniforms = &fruit.uniforms;
+            renderComponent.uniforms[0] = .{ .mat4 = zlmToZrenderMat4(transform) };
+        }
+    }
+
+    fn getFruitTransform(fruit: Fruit) zlm.Mat4 {
+        var transform = zlm.Mat4.identity;
+        
+        transform = zlm.Mat4.createTranslationXYZ(fruit.xPos, fruit.yPos, 1).mul(transform);
+        transform = zlm.Mat4.createAngleAxis(zlm.Vec3.unitZ, fruit.angle).mul(transform);
+        transform = zlm.Mat4.createUniformScale(fruit.scale).mul(transform);
+        
+        return transform;
+
+    }
+
+    pub fn onClick(this: *@This(), args: zrender.OnMousePressEventArgs) void {
+        _ = args;
+        // spawn a fruit
+        this.shouldSpawnFruit = true;
     }
 
     pub fn systemDeinitGlobal(this: *@This(), registries: *zengine.RegistrySet) void {
@@ -108,20 +186,20 @@ const AcerolaGameJamSystem = struct {
     fn zlmToZrenderMat4(matrix: zlm.Mat4) zrender.Mat4 {
         return zrender.Mat4{
             .m00 = matrix.fields[0][0],
-            .m01 = matrix.fields[1][0],
-            .m02 = matrix.fields[2][0],
-            .m03 = matrix.fields[3][0],
-            .m10 = matrix.fields[0][1],
+            .m01 = matrix.fields[0][1],
+            .m02 = matrix.fields[0][2],
+            .m03 = matrix.fields[0][3],
+            .m10 = matrix.fields[1][0],
             .m11 = matrix.fields[1][1],
-            .m12 = matrix.fields[2][1],
-            .m13 = matrix.fields[3][1],
-            .m20 = matrix.fields[0][2],
-            .m21 = matrix.fields[1][2],
+            .m12 = matrix.fields[1][2],
+            .m13 = matrix.fields[1][3],
+            .m20 = matrix.fields[2][0],
+            .m21 = matrix.fields[2][1],
             .m22 = matrix.fields[2][2],
-            .m23 = matrix.fields[3][2],
-            .m30 = matrix.fields[0][3],
-            .m31 = matrix.fields[1][3],
-            .m32 = matrix.fields[2][3],
+            .m23 = matrix.fields[2][3],
+            .m30 = matrix.fields[3][0],
+            .m31 = matrix.fields[3][1],
+            .m32 = matrix.fields[3][2],
             .m33 = matrix.fields[3][3],
         };
     }
@@ -139,10 +217,8 @@ const AcerolaGameJamSystem = struct {
     quadMesh: zrender.MeshHandle,
     texture: zrender.TextureHandle,
     pipeline: zrender.PipelineHandle,
-    // TODO: move into component
-    uniforms: [2]zrender.Uniform,
-    entity: ecs.Entity,
     timeSinceStart: i64,
+    shouldSpawnFruit: bool = false,
 };
 
 pub fn main() !void {

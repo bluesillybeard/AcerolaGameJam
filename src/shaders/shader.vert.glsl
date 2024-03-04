@@ -9,5 +9,5 @@ out vec2 _texCoords;
 
 void main() {
     _texCoords = texCoord;
-    gl_Position = transform * vec4(pos, 1);
+    gl_Position = transform * vec4(pos, 1.0f);
 }
