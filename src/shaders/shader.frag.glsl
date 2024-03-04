@@ -8,4 +8,5 @@ out vec4 color;
 
 void main() {
     color = texture(tex, _texCoords);
+    if(color.a < 0.5) discard;
 }

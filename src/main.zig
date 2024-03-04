@@ -6,7 +6,7 @@ const ecs = @import("ecs");
 
 // All spatial units are in screens per second.
 // The viewport of the player is normalized so the smaller dimetion is 1, and the larger dimention is >=1.
-const gravity = -1.0;
+const gravity = -2.0;
 
 // there is only one shader so only one type of vertex is needed
 const Vertex = struct {
@@ -52,21 +52,30 @@ const AcerolaGameJamSystem = struct {
         return .{
             .allocator = heapAllocator,
             .timeSinceStart = 0,
+            .fruitSpawnCountown = 0,
             // these undefines are ok since they are set within SystemInit
             .quadMesh = undefined,
-            .texture = undefined,
+            .fruitTexture = undefined,
+            .bgTexture = undefined,
+            .fgTexture = undefined,
             .pipeline = undefined,
+            .rand = undefined,
+            .bgEntity = undefined,
+            .bgUniforms = undefined,
+            .fgEntity = undefined,
+            .fgUniforms = undefined,
         };
     }
 
     pub fn systemInitGlobal(this: *@This(), registries: *zengine.RegistrySet, settings: anytype) !void {
+        this.rand = std.rand.DefaultPrng.init(@bitCast(std.time.microTimestamp()));
         const renderSystem = registries.globalRegistry.getRegister(zrender.ZRenderSystem).?;
         // create the pipeline
         this.pipeline = try renderSystem.createPipeline(@embedFile("shaderBin/shader.vert"), @embedFile("shaderBin/shader.frag"), .{
             .attributes = &Vertex.attributes,
             .uniforms = &[_]zrender.NamedUniformTag{ .{ .name = "transform", .tag = .mat4 }, .{ .name = "tex", .tag = .texture } },
         });
-        // load a quad mesh
+        // Load assets for fruit
         // This jam was written before ZRender had mesh loading functions so the mesh has to be loaded in pure code.
         // You know, if this jam was like a week later then I would have had the time to implement that into ZRender.
         this.quadMesh = try renderSystem.loadMesh(Vertex, &[_]Vertex{
@@ -78,7 +87,30 @@ const AcerolaGameJamSystem = struct {
             0, 1, 2, 2, 3, 0,
         }, this.pipeline);
 
-        this.texture = try renderSystem.loadTexture(@embedFile("assets/fruit.png"));
+        this.fruitTexture = try renderSystem.loadTexture(@embedFile("assets/fruit.png"));
+        this.bgTexture = try renderSystem.loadTexture(@embedFile("assets/bg.png"));
+        this.fgTexture = try renderSystem.loadTexture(@embedFile("assets/fg.png"));
+
+        // background entity
+        this.bgEntity = registries.globalEcsRegistry.create();
+        registries.globalEcsRegistry.add(this.bgEntity, zrender.RenderComponent {
+            .mesh = this.quadMesh,
+            .pipeline = this.pipeline,
+            .uniforms = &this.bgUniforms,
+        });
+        // TODO non-identity transform
+        this.bgUniforms[0] = .{.mat4 = zrender.Mat4.identity};
+        this.bgUniforms[1] = .{.texture = this.bgTexture};
+        // foreground entity
+        this.fgEntity = registries.globalEcsRegistry.create();
+        registries.globalEcsRegistry.add(this.fgEntity, zrender.RenderComponent {
+            .mesh = this.quadMesh,
+            .pipeline = this.pipeline,
+            .uniforms = &this.fgUniforms,
+        });
+        // TODO non-identity transform
+        this.fgUniforms[0] = .{.mat4 = zrender.Mat4.identity};
+        this.fgUniforms[1] = .{.texture = this.fgTexture};
 
         renderSystem.onUpdate.sink().connectBound(this, "update");
         renderSystem.onMousePress.sink().connectBound(this, "onClick");
@@ -101,23 +133,26 @@ const AcerolaGameJamSystem = struct {
 
     pub fn update(this: *@This(), args: zrender.OnUpdateEventArgs) void {
         this.timeSinceStart += args.delta;
+        this.fruitSpawnCountown -= args.delta;
+        var random = this.rand.random();
         // Every time @as(@floatFromInt) is needed, I am reminding you how silly this is
         const deltaSeconds: f32 = @as(f32, @floatFromInt(args.delta)) / std.time.us_per_s;
         const renderSystem = args.registries.globalRegistry.getRegister(zrender.ZRenderSystem).?;
 
-        if(this.shouldSpawnFruit) {
-            this.shouldSpawnFruit = false;
-            std.debug.print("Spawned fruit\n", .{});
-            this.spawnFruit(args.registries, this.texture, Fruit {
+        if(this.fruitSpawnCountown < 0) {
+            this.spawnFruit(args.registries, this.fruitTexture, Fruit {
                 .angle = 0,
-                .aVel = 0.5,
-                .scale = 0.5,
-                .xPos = 0.5,
-                .yPos = 0,
-                .xVel = 0,
-                .yVel = 1,
+                .aVel = random.float(f32) * 1.5 - (1.5 / 2.0),
+                .scale = 0.15,
+                .xPos = random.float(f32) * 2 - 1,
+                .yPos = -1.5,
+                // TODO: bias this towards the middle of the screen
+                .xVel = random.float(f32) * 1.0 - (1.0 / 2.0),
+                .yVel = 3,
             });
+            this.fruitSpawnCountown += 1 * std.time.us_per_s;
         }
+        
         
         // TODO: define camera parameters elsewhere
         const resolution = renderSystem.getWindowResolution();
@@ -137,9 +172,16 @@ const AcerolaGameJamSystem = struct {
         cameraTransform = zlm.Mat4.createLook(zlm.Vec3{ .x = cameraCenter.x, .y = cameraCenter.y, .z = 0.5 }, zlm.Vec3.unitZ, zlm.Vec3.unitY).mul(cameraTransform);
         const view = args.registries.globalEcsRegistry.basicView(FruitComponent);
         var iterator = view.entityIterator();
+        var fruitToRemove = std.ArrayList(ecs.Entity).init(this.allocator);
+        defer fruitToRemove.deinit();
         while(iterator.next()) |entity| {
             // explicit type hint because zls isn't very good at comptime stuff
             const fruit: *FruitComponent = view.get(entity);
+            // delete fruit that fall offscreen
+            if(fruit.fruit.yPos < -1.5) {
+                fruitToRemove.append(entity) catch @panic("Out of memory!");
+                continue;
+            }
             const renderComponent = args.registries.globalEcsRegistry.get(zrender.RenderComponent, entity);
             // Update the fruit
             fruit.fruit.yVel += gravity * deltaSeconds;
@@ -155,6 +197,15 @@ const AcerolaGameJamSystem = struct {
             renderComponent.uniforms = &fruit.uniforms;
             renderComponent.uniforms[0] = .{ .mat4 = zlmToZrenderMat4(transform) };
         }
+        for(fruitToRemove.items) |entity| {
+            args.registries.globalEcsRegistry.destroy(entity);
+        }
+        // update foreground and background transforms
+        var bgTransform = zlm.Mat4.createTranslationXYZ(0, 0, 0.75);
+        this.bgUniforms[0].mat4 = zlmToZrenderMat4(bgTransform.mul(cameraTransform));
+        var fgTransform = zlm.Mat4.createTranslationXYZ(0, 0, 1.1);
+        fgTransform = zlm.Mat4.createUniformScale(3).mul(fgTransform);
+        this.fgUniforms[0].mat4 = zlmToZrenderMat4(fgTransform.mul(cameraTransform));
     }
 
     fn getFruitTransform(fruit: Fruit) zlm.Mat4 {
@@ -170,8 +221,7 @@ const AcerolaGameJamSystem = struct {
 
     pub fn onClick(this: *@This(), args: zrender.OnMousePressEventArgs) void {
         _ = args;
-        // spawn a fruit
-        this.shouldSpawnFruit = true;
+        _ = this;
     }
 
     pub fn systemDeinitGlobal(this: *@This(), registries: *zengine.RegistrySet) void {
@@ -215,10 +265,17 @@ const AcerolaGameJamSystem = struct {
     allocator: std.mem.Allocator,
     // If this wasn't a jam, I would write an actual asset manager instead of just plonking them here
     quadMesh: zrender.MeshHandle,
-    texture: zrender.TextureHandle,
+    fruitTexture: zrender.TextureHandle,
+    bgTexture: zrender.TextureHandle,
+    fgTexture: zrender.TextureHandle,
     pipeline: zrender.PipelineHandle,
     timeSinceStart: i64,
-    shouldSpawnFruit: bool = false,
+    rand: std.rand.DefaultPrng,
+    fruitSpawnCountown: i64,
+    bgEntity: ecs.Entity,
+    bgUniforms: [2]zrender.Uniform,
+    fgEntity: ecs.Entity,
+    fgUniforms: [2]zrender.Uniform,
 };
 
 pub fn main() !void {
