@@ -21,9 +21,22 @@ const Vertex = struct {
     texY: f32,
 };
 
+const FruitType = enum(u32) {
+    tomato = 0,
+    count,
+};
+
 const FruitComponent = struct {
     uniforms: [2] zrender.Uniform,
     fruit: Fruit,
+    t: FruitType,
+};
+
+const CutFruitComponent = struct {
+    uniforms: [2] zrender.Uniform,
+    fruit: Fruit,
+    t: FruitType,
+    slice: u32,
 };
 
 const Fruit = struct {
@@ -38,11 +51,17 @@ const Fruit = struct {
     scale: f32,
 };
 
+const FruitTextures = struct {
+    whole: zrender.TextureHandle,
+    part1: zrender.TextureHandle,
+    part2: zrender.TextureHandle,
+};
+
 // A "normal" ZEngine game should split functionality across many systems for better organization.
 // This is a game jam so I don't give a crap.
 const AcerolaGameJamSystem = struct {
     pub const name: []const u8 = "acerola_game_jam";
-    pub const components = [_]type{};
+    pub const components = [_]type{FruitComponent, CutFruitComponent};
     pub fn comptimeVerification(comptime options: zengine.ZEngineComptimeOptions) bool {
         // verification is for loosers. Even though I'm the guy who created this verification function in the first place...
         _ = options;
@@ -57,7 +76,7 @@ const AcerolaGameJamSystem = struct {
             .fruitSpawnCountown = 0,
             // these undefines are ok since they are set within SystemInit
             .quadMesh = undefined,
-            .fruitTexture = undefined,
+            .fruitTextures = undefined,
             .bgTexture = undefined,
             .fgTexture = undefined,
             .pipeline = undefined,
@@ -73,6 +92,9 @@ const AcerolaGameJamSystem = struct {
             .lastCursorUpdate = 0,
             .cursorVelX = 0,
             .cursorVelY = 0,
+            .knifeTexture = undefined,
+            .knifeEntity = undefined,
+            .knifeUniforms = undefined,
         };
     }
 
@@ -84,7 +106,7 @@ const AcerolaGameJamSystem = struct {
             .attributes = &Vertex.attributes,
             .uniforms = &[_]zrender.NamedUniformTag{ .{ .name = "transform", .tag = .mat4 }, .{ .name = "tex", .tag = .texture } },
         });
-        // Load assets for fruit
+        // Load assets
         // This jam was written before ZRender had mesh loading functions so the mesh has to be loaded in pure code.
         // You know, if this jam was like a week later then I would have had the time to implement that into ZRender.
         this.quadMesh = try renderSystem.loadMesh(Vertex, &[_]Vertex{
@@ -96,9 +118,27 @@ const AcerolaGameJamSystem = struct {
             0, 1, 2, 2, 3, 0,
         }, this.pipeline);
 
-        this.fruitTexture = try renderSystem.loadTexture(@embedFile("assets/fruit.png"));
+        this.fruitTextures = [_]FruitTextures{
+            .{
+                .whole = try renderSystem.loadTexture(@embedFile("assets/tomato.png")),
+                .part1 = try renderSystem.loadTexture(@embedFile("assets/tomato1.png")),
+                .part2 = try renderSystem.loadTexture(@embedFile("assets/tomato2.png")),
+            }
+        };
         this.bgTexture = try renderSystem.loadTexture(@embedFile("assets/bg.png"));
         this.fgTexture = try renderSystem.loadTexture(@embedFile("assets/fg.png"));
+        this.knifeTexture = try renderSystem.loadTexture(@embedFile("assets/knife.png"));
+
+        // knife entity
+        this.knifeEntity = registries.globalEcsRegistry.create();
+        registries.globalEcsRegistry.add(this.knifeEntity, zrender.RenderComponent{
+            .mesh = this.quadMesh,
+            .pipeline = this.pipeline,
+            .uniforms = &this.knifeUniforms,
+        });
+
+        this.knifeUniforms[0] = .{.mat4 = zrender.Mat4.identity};
+        this.knifeUniforms[1] = .{.texture = this.knifeTexture};
 
         // background entity
         this.bgEntity = registries.globalEcsRegistry.create();
@@ -127,11 +167,13 @@ const AcerolaGameJamSystem = struct {
         _ = settings;
     }
 
-    fn spawnFruit(this: *@This(), registries: *zengine.RegistrySet, texture: zrender.TextureHandle, fruit: Fruit) void {
+    fn spawnFruit(this: *@This(), registries: *zengine.RegistrySet, t: FruitType, fruit: Fruit) void {
+        const textures = this.fruitTextures[@intFromEnum(t)];
         const entity = registries.globalEcsRegistry.create();
         registries.globalEcsRegistry.add(entity, FruitComponent {
-            .uniforms = [_]zrender.Uniform{.{.mat4 = zrender.Mat4.identity}, .{.texture = texture}},
+            .uniforms = [_]zrender.Uniform{.{.mat4 = zrender.Mat4.identity}, .{.texture = textures.whole}},
             .fruit = fruit,
+            .t = .tomato,
         });
         const fruitComponent = registries.globalEcsRegistry.get(FruitComponent, entity);
         registries.globalEcsRegistry.add(entity, zrender.RenderComponent{
@@ -150,9 +192,9 @@ const AcerolaGameJamSystem = struct {
         const renderSystem = args.registries.globalRegistry.getRegister(zrender.ZRenderSystem).?;
 
         if(this.fruitSpawnCountown < 0) {
-            this.spawnFruit(args.registries, this.fruitTexture, Fruit {
+            this.spawnFruit(args.registries, FruitType.tomato, Fruit {
                 .angle = 0,
-                .aVel = random.float(f32) * 1.5 - (1.5 / 2.0),
+                .aVel = random.float(f32) * 3.0 - (3.0 / 2.0),
                 .scale = 0.07,
                 .xPos = random.float(f32) * 2 - 1,
                 .yPos = -1.5,
@@ -165,12 +207,59 @@ const AcerolaGameJamSystem = struct {
             });
             this.fruitSpawnCountown += 1 * std.time.us_per_s;
         }
-        // camera transformations
         const cameraTransform = getCameraTransform(renderSystem.getWindowResolution());
+        this.updateFruit(args, deltaSeconds, cameraTransform);
+        this.updateSlices(args, deltaSeconds, cameraTransform);
+        // the knife is above the foreground layer
+        var knifeTransform = zlm.Mat4.createTranslationXYZ(this.cursorX, this.cursorY, 1.2);
+        knifeTransform = zlm.Mat4.createUniformScale(0.01).mul(knifeTransform);
+        this.knifeUniforms[0].mat4 = zlmToZrenderMat4(knifeTransform.mul(cameraTransform));
+        // update foreground and background transforms
+        var bgTransform = zlm.Mat4.createTranslationXYZ(0, 0, 0.75);
+        this.bgUniforms[0].mat4 = zlmToZrenderMat4(bgTransform.mul(cameraTransform));
+        var fgTransform = zlm.Mat4.createTranslationXYZ(0, 0, 1.1);
+        fgTransform = zlm.Mat4.createUniformScale(3).mul(fgTransform);
+        this.fgUniforms[0].mat4 = zlmToZrenderMat4(fgTransform.mul(cameraTransform));
+    }
+
+    fn updateSlices(this: *@This(), args: zrender.OnFrameEventArgs, deltaSeconds: f32, cameraTransform: zlm.Mat4) void {
+        const view = args.registries.globalEcsRegistry.basicView(CutFruitComponent);
+        var iterator = view.entityIterator();
+        var slicesToRemove = std.ArrayList(ecs.Entity).init(this.allocator);
+        defer slicesToRemove.deinit();
+        while(iterator.next()) |entity| {
+            // explicit type hint because zls isn't very good at comptime stuff
+            const fruit: *CutFruitComponent = view.get(entity);
+            // delete slices that fall offscreen
+            if(fruit.fruit.yPos < -1.5) {
+                slicesToRemove.append(entity) catch @panic("Out of memory!");
+            }
+            // Update the slices
+            fruit.fruit.yVel += gravity * deltaSeconds;
+            fruit.fruit.lastXPos = fruit.fruit.xPos;
+            fruit.fruit.lastYPos = fruit.fruit.yPos;
+            fruit.fruit.yPos += fruit.fruit.yVel * deltaSeconds;
+            fruit.fruit.xPos += fruit.fruit.xVel * deltaSeconds;
+            fruit.fruit.angle += fruit.fruit.aVel * deltaSeconds;
+
+            // Update the render component with the new data
+            const renderComponent = args.registries.globalEcsRegistry.get(zrender.RenderComponent, entity);
+            const objectTransform = getFruitTransform(fruit.fruit);
+            const transform = objectTransform.mul(cameraTransform);
+            // Sometimes, the renderComponent's reference to uniforms is invalidated when the ECS expands things,
+            // So, set the render component to the correct one
+            renderComponent.uniforms = &fruit.uniforms;
+            renderComponent.uniforms[0] = .{ .mat4 = zlmToZrenderMat4(transform) };
+        }
+    }
+
+    fn updateFruit(this: *@This(), args: zrender.OnFrameEventArgs, deltaSeconds: f32, cameraTransform: zlm.Mat4) void {
         const view = args.registries.globalEcsRegistry.basicView(FruitComponent);
         var iterator = view.entityIterator();
         var fruitToRemove = std.ArrayList(ecs.Entity).init(this.allocator);
         defer fruitToRemove.deinit();
+        var cutFruitToSpawn = std.ArrayList(ecs.Entity).init(this.allocator);
+        defer cutFruitToSpawn.deinit();
         while(iterator.next()) |entity| {
             // explicit type hint because zls isn't very good at comptime stuff
             const fruit: *FruitComponent = view.get(entity);
@@ -192,7 +281,8 @@ const AcerolaGameJamSystem = struct {
             // then that fruit gets deleted
             const fruitCursorDistance = segmentSegmentDistance(this.cursorX, this.cursorY, this.lastCursorX, this.lastCursorY, fruit.fruit.xPos, fruit.fruit.yPos, fruit.fruit.lastXPos, fruit.fruit.lastYPos);
             const cursorVelocity = this.cursorVelX * this.cursorVelX + this.cursorVelY * this.cursorVelY;
-            if(fruitCursorDistance < fruit.fruit.scale and cursorVelocity > 0.2) {
+            if(fruitCursorDistance < fruit.fruit.scale and cursorVelocity > 0.6) {
+                cutFruitToSpawn.append(entity) catch @panic("Out of memory!");
                 fruitToRemove.append(entity) catch @panic("Out of memory!");
                 continue;
             }
@@ -205,17 +295,41 @@ const AcerolaGameJamSystem = struct {
             renderComponent.uniforms = &fruit.uniforms;
             renderComponent.uniforms[0] = .{ .mat4 = zlmToZrenderMat4(transform) };
         }
+        for(cutFruitToSpawn.items) |entity| {
+            const fruit = args.registries.globalEcsRegistry.get(FruitComponent, entity);
+            this.spawnFruitSlice(&args.registries.globalEcsRegistry, fruit, 1);
+            this.spawnFruitSlice(&args.registries.globalEcsRegistry, fruit, 2);
+        }
         for(fruitToRemove.items) |entity| {
             args.registries.globalEcsRegistry.destroy(entity);
         }
-        // update foreground and background transforms
-        var bgTransform = zlm.Mat4.createTranslationXYZ(0, 0, 0.75);
-        this.bgUniforms[0].mat4 = zlmToZrenderMat4(bgTransform.mul(cameraTransform));
-        var fgTransform = zlm.Mat4.createTranslationXYZ(0, 0, 1.1);
-        fgTransform = zlm.Mat4.createUniformScale(3).mul(fgTransform);
-        this.fgUniforms[0].mat4 = zlmToZrenderMat4(fgTransform.mul(cameraTransform));
     }
 
+    fn spawnFruitSlice(this: *@This(), ecsRegistry: *ecs.Registry, fruit: *FruitComponent, slice: u32) void {
+        const entity = ecsRegistry.create();
+        var fruitData = fruit.fruit;
+        fruitData.xVel += this.cursorVelX * 0.1;
+        fruitData.yVel += this.cursorVelY * 0.1;
+        fruitData.xVel += this.rand.random().float(f32) * 2.0 - (2.0*0.5);
+        ecsRegistry.add(entity, CutFruitComponent{
+            .fruit = fruitData,
+            .slice = slice,
+            .t = fruit.t,
+            .uniforms = fruit.uniforms,
+        });
+        const cut1Comp = ecsRegistry.get(CutFruitComponent, entity);
+        ecsRegistry.add(entity, zrender.RenderComponent{
+            .mesh = this.quadMesh,
+            .pipeline = this.pipeline,
+            .uniforms = &cut1Comp.uniforms,
+        });
+        if(slice == 1) {
+            cut1Comp.uniforms[1] = .{.texture = this.fruitTextures[@intFromEnum(fruit.t)].part1};
+        } else {
+            cut1Comp.uniforms[1] = .{.texture = this.fruitTextures[@intFromEnum(fruit.t)].part2};
+        }
+        
+    }
     fn getFruitTransform(fruit: Fruit) zlm.Mat4 {
         var transform = zlm.Mat4.identity;
         
@@ -375,7 +489,7 @@ const AcerolaGameJamSystem = struct {
     allocator: std.mem.Allocator,
     // If this wasn't a jam, I would write an actual asset manager instead of just plonking them here
     quadMesh: zrender.MeshHandle,
-    fruitTexture: zrender.TextureHandle,
+    fruitTextures: [@intFromEnum(FruitType.count)]FruitTextures,
     bgTexture: zrender.TextureHandle,
     fgTexture: zrender.TextureHandle,
     pipeline: zrender.PipelineHandle,
@@ -396,6 +510,9 @@ const AcerolaGameJamSystem = struct {
     // Cursor speed in world space / second
     cursorVelX: f32,
     cursorVelY: f32,
+    knifeTexture: zrender.TextureHandle,
+    knifeEntity: ecs.Entity,
+    knifeUniforms: [2]zrender.Uniform,
 };
 
 pub fn main() !void {
