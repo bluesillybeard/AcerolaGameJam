@@ -8,6 +8,8 @@ const ecs = @import("ecs");
 // The viewport of the player is normalized so the smaller dimetion is 1, and the larger dimention is >=1.
 const gravity = -2.0;
 
+const numKnifeParts = 1000;
+
 // there is only one shader so only one type of vertex is needed
 const Vertex = struct {
     pub const attributes = [_]zrender.NamedAttribute{
@@ -19,6 +21,12 @@ const Vertex = struct {
     z: f32,
     texX: f32,
     texY: f32,
+};
+
+const KnifeData = struct {
+    x: f32,
+    y: f32,
+    number: u32,
 };
 
 const FruitType = enum(u32) {
@@ -93,14 +101,19 @@ const AcerolaGameJamSystem = struct {
             .cursorVelX = 0,
             .cursorVelY = 0,
             .knifeTexture = undefined,
-            .knifeEntity = undefined,
+            .knifeEntities = undefined,
             .knifeUniforms = undefined,
+            .currentKnifeIndex = 0,
+            .knifeData = [1]KnifeData{.{.number = numKnifeParts, .x = 0, .y = 0}} ** numKnifeParts,
+            .cursorXLastUpdate = 0,
+            .cursorYLastUpdate = 0,
         };
     }
 
     pub fn systemInitGlobal(this: *@This(), registries: *zengine.RegistrySet, settings: anytype) !void {
         this.rand = std.rand.DefaultPrng.init(@bitCast(std.time.microTimestamp()));
         const renderSystem = registries.globalRegistry.getRegister(zrender.ZRenderSystem).?;
+        renderSystem.updateDelta = std.time.us_per_s / 120;
         // create the pipeline
         this.pipeline = try renderSystem.createPipeline(@embedFile("shaderBin/shader.vert"), @embedFile("shaderBin/shader.frag"), .{
             .attributes = &Vertex.attributes,
@@ -129,16 +142,19 @@ const AcerolaGameJamSystem = struct {
         this.fgTexture = try renderSystem.loadTexture(@embedFile("assets/fg.png"));
         this.knifeTexture = try renderSystem.loadTexture(@embedFile("assets/knife.png"));
 
-        // knife entity
-        this.knifeEntity = registries.globalEcsRegistry.create();
-        registries.globalEcsRegistry.add(this.knifeEntity, zrender.RenderComponent{
-            .mesh = this.quadMesh,
-            .pipeline = this.pipeline,
-            .uniforms = &this.knifeUniforms,
-        });
+        for(0..this.knifeEntities.len) |i|{
+            // knife entity
+            this.knifeEntities[i] = registries.globalEcsRegistry.create();
+            registries.globalEcsRegistry.add(this.knifeEntities[i], zrender.RenderComponent{
+                .mesh = this.quadMesh,
+                .pipeline = this.pipeline,
+                .uniforms = &this.knifeUniforms[i],
+            });
 
-        this.knifeUniforms[0] = .{.mat4 = zrender.Mat4.identity};
-        this.knifeUniforms[1] = .{.texture = this.knifeTexture};
+            this.knifeUniforms[i][0] = .{.mat4 = zrender.Mat4.identity};
+            this.knifeUniforms[i][1] = .{.texture = this.knifeTexture};
+        }
+        
 
         // background entity
         this.bgEntity = registries.globalEcsRegistry.create();
@@ -162,6 +178,7 @@ const AcerolaGameJamSystem = struct {
         this.fgUniforms[1] = .{.texture = this.fgTexture};
 
         renderSystem.onFrame.sink().connectBound(this, "onFrame");
+        renderSystem.onUpdate.sink().connectBound(this, "onUpdate");
         renderSystem.onMousePress.sink().connectBound(this, "onClick");
         renderSystem.onMouseMove.sink().connectBound(this, "onMouseMove");
         _ = settings;
@@ -210,16 +227,50 @@ const AcerolaGameJamSystem = struct {
         const cameraTransform = getCameraTransform(renderSystem.getWindowResolution());
         this.updateFruit(args, deltaSeconds, cameraTransform);
         this.updateSlices(args, deltaSeconds, cameraTransform);
-        // the knife is above the foreground layer
-        var knifeTransform = zlm.Mat4.createTranslationXYZ(this.cursorX, this.cursorY, 1.2);
-        knifeTransform = zlm.Mat4.createUniformScale(0.01).mul(knifeTransform);
-        this.knifeUniforms[0].mat4 = zlmToZrenderMat4(knifeTransform.mul(cameraTransform));
         // update foreground and background transforms
         var bgTransform = zlm.Mat4.createTranslationXYZ(0, 0, 0.75);
         this.bgUniforms[0].mat4 = zlmToZrenderMat4(bgTransform.mul(cameraTransform));
         var fgTransform = zlm.Mat4.createTranslationXYZ(0, 0, 1.1);
         fgTransform = zlm.Mat4.createUniformScale(3).mul(fgTransform);
         this.fgUniforms[0].mat4 = zlmToZrenderMat4(fgTransform.mul(cameraTransform));
+    }
+
+    pub fn onUpdate(this: *@This(), args: zrender.OnUpdateEventArgs) void {
+        // TODO: figure out why the knife pulsates so strangely
+        const renderSystem = args.registries.globalRegistry.getRegister(zrender.ZRenderSystem).?;
+        const cameraTransform = getCameraTransform(renderSystem.getWindowResolution());
+        // Each knife has a certain degree of delay.
+        // To achieve this delay, the oldest knife is updated to the to current mouse pos
+        const knifeDotsPerUpdate = @divExact(numKnifeParts, 20);
+        for(0..knifeDotsPerUpdate) |i| {
+            // lerp the cursor position to create a line between where it was last update and where it is now
+            const w = @as(f32, @floatFromInt(i)) / knifeDotsPerUpdate;
+            // lerp it backwards since this iterates away from the cursor.
+            const cursorX = this.cursorX * (1 - w) + this.cursorXLastUpdate * w;
+            const cursorY = this.cursorY * (1 - w) + this.cursorYLastUpdate * w;
+            const currentKnifeData = &this.knifeData[this.currentKnifeIndex];
+            currentKnifeData.number = @intCast(numKnifeParts - i);
+            currentKnifeData.x = cursorX;
+            currentKnifeData.y = cursorY;
+            // increment
+            this.currentKnifeIndex = @mod(this.currentKnifeIndex + 1, this.knifeUniforms.len);
+        }
+        // update the transforms of all of the knifes
+        for(0..this.knifeEntities.len) |i|{
+            // This is aboninably bad but whatever
+            const data = &this.knifeData[i];
+            // get the transform
+            var knifeTransform = zlm.Mat4.createTranslationXYZ(data.x, data.y, 1.2);
+            knifeTransform = zlm.Mat4.createUniformScale((@as(f32, @floatFromInt(data.number)) / numKnifeParts) * 0.01).mul(knifeTransform);
+            this.knifeUniforms[this.currentKnifeIndex][0].mat4 = zlmToZrenderMat4(knifeTransform.mul(cameraTransform));
+            // scale it down slightly
+            knifeTransform = zlm.Mat4.createUniformScale(0.8).mul(knifeTransform);
+            // re-apply the camera and update
+            this.knifeUniforms[i][0].mat4 = zlmToZrenderMat4(knifeTransform.mul(cameraTransform));
+            data.number = @intCast(std.math.clamp(@as(isize, data.number) - knifeDotsPerUpdate, 0, numKnifeParts));
+        }
+        this.cursorXLastUpdate = this.cursorX;
+        this.cursorYLastUpdate = this.cursorY;
     }
 
     fn updateSlices(this: *@This(), args: zrender.OnFrameEventArgs, deltaSeconds: f32, cameraTransform: zlm.Mat4) void {
@@ -479,7 +530,7 @@ const AcerolaGameJamSystem = struct {
     }
 
     fn zrenderToZlmMat4(m: zrender.Mat4) zlm.Mat4 {
-        return zrender.Mat4{ .fields = [_][4]f32{
+        return zlm.Mat4{ .fields = [_][4]f32{
             [_]f32{ m.m00, m.m10, m.m20, m.m30 },
             [_]f32{ m.m01, m.m11, m.m21, m.m31 },
             [_]f32{ m.m02, m.m12, m.m22, m.m32 },
@@ -505,14 +556,18 @@ const AcerolaGameJamSystem = struct {
     cursorY: f32,
     lastCursorX: f32,
     lastCursorY: f32,
+    cursorXLastUpdate: f32,
+    cursorYLastUpdate: f32,
     // the frame time when the cursor was last updated
     lastCursorUpdate: i64,
     // Cursor speed in world space / second
     cursorVelX: f32,
     cursorVelY: f32,
     knifeTexture: zrender.TextureHandle,
-    knifeEntity: ecs.Entity,
-    knifeUniforms: [2]zrender.Uniform,
+    knifeEntities: [numKnifeParts]ecs.Entity,
+    knifeUniforms: [numKnifeParts][2]zrender.Uniform,
+    knifeData: [numKnifeParts]KnifeData,
+    currentKnifeIndex: usize,
 };
 
 pub fn main() !void {
