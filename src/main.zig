@@ -8,8 +8,13 @@ const ecs = @import("ecs");
 // The viewport of the player is normalized so the smaller dimesion is 1, and the larger dimention is >=1.
 const gravity = -2.0;
 
-// The cursor trail knife thing is made of this many circles that are put together to look like a line
-const numKnifeParts = 1000;
+// The cursor trail knife thing is made of this many circles that are put together to look like a line.
+// Also, updating and rendering 500 circles is literally like 80% of the games CPU usage lol
+const numKnifeParts = 500;
+
+const GameState = enum {
+    slice,
+};
 
 // there is only one shader so only one type of vertex is needed
 const Vertex = struct {
@@ -108,11 +113,18 @@ const AcerolaGameJamSystem = struct {
             .knifeTexture = undefined,
             .knifeEntities = undefined,
             .knifeUniforms = undefined,
+            .gameState = undefined,
             
         };
     }
 
     pub fn systemInitGlobal(this: *@This(), registries: *zengine.RegistrySet, settings: anytype) !void {
+        try this.initialSetup(registries);
+        _ = settings;
+    }
+
+    fn initialSetup(this: *@This(), registries: *zengine.RegistrySet) !void {
+        this.gameState = .slice;
         this.rand = std.rand.DefaultPrng.init(@bitCast(std.time.microTimestamp()));
         const renderSystem = registries.globalRegistry.getRegister(zrender.ZRenderSystem).?;
         renderSystem.updateDelta = std.time.us_per_s / 120;
@@ -183,7 +195,6 @@ const AcerolaGameJamSystem = struct {
         renderSystem.onUpdate.sink().connectBound(this, "onUpdate");
         renderSystem.onMousePress.sink().connectBound(this, "onClick");
         renderSystem.onMouseMove.sink().connectBound(this, "onMouseMove");
-        _ = settings;
     }
 
     fn spawnFruit(this: *@This(), registries: *zengine.RegistrySet, t: FruitType, fruit: Fruit) void {
@@ -211,6 +222,7 @@ const AcerolaGameJamSystem = struct {
         const renderSystem = args.registries.globalRegistry.getRegister(zrender.ZRenderSystem).?;
 
         if(this.fruitSpawnCountown < 0) {
+            // TODO: add more fruits & bombs
             this.spawnFruit(args.registries, FruitType.tomato, Fruit {
                 .angle = 0,
                 .aVel = random.float(f32) * 3.0 - (3.0 / 2.0),
@@ -222,9 +234,11 @@ const AcerolaGameJamSystem = struct {
                 .lastYPos = -1.5,
                 // TODO: bias this towards the middle of the screen
                 .xVel = random.float(f32) * 1.0 - (1.0 / 2.0),
+                // TODO: randomize vertical velocity
                 .yVel = 3,
             });
-            this.fruitSpawnCountown += 1 * std.time.us_per_s;
+            // TODO: make this decrease as time continues
+            this.fruitSpawnCountown += std.time.us_per_ms * 1000;
         }
         const cameraTransform = getCameraTransform(renderSystem.getWindowResolution());
         this.updateFruit(args, deltaSeconds, cameraTransform);
@@ -303,6 +317,9 @@ const AcerolaGameJamSystem = struct {
             // So, set the render component to the correct one
             renderComponent.uniforms = &fruit.uniforms;
             renderComponent.uniforms[0] = .{ .mat4 = zlmToZrenderMat4(transform) };
+        }
+        for(slicesToRemove.items) |entity| {
+            args.registries.globalEcsRegistry.destroy(entity);
         }
     }
 
@@ -481,7 +498,7 @@ const AcerolaGameJamSystem = struct {
     }
 
     pub fn onMouseMove(this: *@This(), args: zrender.OnMouseMoveEventArgs) void {
-            const cursorDeltaTimeMicros: f32 = @floatFromInt(args.time - this.lastCursorUpdate);
+        const cursorDeltaTimeMicros: f32 = @floatFromInt(args.time - this.lastCursorUpdate);
         const cursorDeltaTime = cursorDeltaTimeMicros / std.time.us_per_s;
         // If the delta is too small, then then ignore this movement
         if(cursorDeltaTimeMicros < 1000) return;
@@ -575,6 +592,7 @@ const AcerolaGameJamSystem = struct {
     knifeUniforms: [numKnifeParts][2]zrender.Uniform,
     knifeData: [numKnifeParts]KnifeData,
     currentKnifeIndex: usize,
+    gameState: GameState,
 };
 
 pub fn main() !void {
@@ -586,7 +604,9 @@ pub fn main() !void {
         .globalSystems = &[_]type{ zrender.ZRenderSystem, AcerolaGameJamSystem },
         .localSystems = &[_]type{},
     });
-    var engine = try ZEngine.init(allocator, .{});
+    var engine = try ZEngine.init(allocator, .{
+        .zrender_title = "Fruit Oops"
+    });
     defer engine.deinit();
     var zrenderSystem = engine.registries.globalRegistry.getRegister(zrender.ZRenderSystem).?;
     zrenderSystem.run();
