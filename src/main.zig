@@ -5,9 +5,10 @@ const zlm = @import("zlm");
 const ecs = @import("ecs");
 
 // All spatial units are in screens per second.
-// The viewport of the player is normalized so the smaller dimetion is 1, and the larger dimention is >=1.
+// The viewport of the player is normalized so the smaller dimesion is 1, and the larger dimention is >=1.
 const gravity = -2.0;
 
+// The cursor trail knife thing is made of this many circles that are put together to look like a line
 const numKnifeParts = 1000;
 
 // there is only one shader so only one type of vertex is needed
@@ -59,7 +60,7 @@ const Fruit = struct {
     scale: f32,
 };
 
-const FruitTextures = struct {
+const FruitTextureSet = struct {
     whole: zrender.TextureHandle,
     part1: zrender.TextureHandle,
     part2: zrender.TextureHandle,
@@ -82,6 +83,17 @@ const AcerolaGameJamSystem = struct {
             .allocator = heapAllocator,
             .timeSinceStart = 0,
             .fruitSpawnCountown = 0,
+            .cursorX = 0,
+            .cursorY = 0,
+            .lastCursorX = 0,
+            .lastCursorY = 0,
+            .lastCursorUpdate = 0,
+            .cursorVelX = 0,
+            .cursorVelY = 0,
+            .currentKnifeIndex = 0,
+            .knifeData = [1]KnifeData{.{.number = numKnifeParts, .x = 0, .y = 0}} ** numKnifeParts,
+            .cursorXLastUpdate = 0,
+            .cursorYLastUpdate = 0,
             // these undefines are ok since they are set within SystemInit
             .quadMesh = undefined,
             .fruitTextures = undefined,
@@ -93,20 +105,10 @@ const AcerolaGameJamSystem = struct {
             .bgUniforms = undefined,
             .fgEntity = undefined,
             .fgUniforms = undefined,
-            .cursorX = 0,
-            .cursorY = 0,
-            .lastCursorX = 0,
-            .lastCursorY = 0,
-            .lastCursorUpdate = 0,
-            .cursorVelX = 0,
-            .cursorVelY = 0,
             .knifeTexture = undefined,
             .knifeEntities = undefined,
             .knifeUniforms = undefined,
-            .currentKnifeIndex = 0,
-            .knifeData = [1]KnifeData{.{.number = numKnifeParts, .x = 0, .y = 0}} ** numKnifeParts,
-            .cursorXLastUpdate = 0,
-            .cursorYLastUpdate = 0,
+            
         };
     }
 
@@ -131,7 +133,7 @@ const AcerolaGameJamSystem = struct {
             0, 1, 2, 2, 3, 0,
         }, this.pipeline);
 
-        this.fruitTextures = [_]FruitTextures{
+        this.fruitTextures = [@intFromEnum(FruitType.count)]FruitTextureSet{
             .{
                 .whole = try renderSystem.loadTexture(@embedFile("assets/tomato.png")),
                 .part1 = try renderSystem.loadTexture(@embedFile("assets/tomato1.png")),
@@ -540,10 +542,11 @@ const AcerolaGameJamSystem = struct {
     allocator: std.mem.Allocator,
     // If this wasn't a jam, I would write an actual asset manager instead of just plonking them here
     quadMesh: zrender.MeshHandle,
-    fruitTextures: [@intFromEnum(FruitType.count)]FruitTextures,
+    fruitTextures: [@intFromEnum(FruitType.count)]FruitTextureSet,
     bgTexture: zrender.TextureHandle,
     fgTexture: zrender.TextureHandle,
     pipeline: zrender.PipelineHandle,
+    knifeTexture: zrender.TextureHandle,
     timeSinceStart: i64,
     rand: std.rand.DefaultPrng,
     fruitSpawnCountown: i64,
@@ -554,8 +557,11 @@ const AcerolaGameJamSystem = struct {
     // Cursor position in world space.
     cursorX: f32,
     cursorY: f32,
+    // the cursor position last frame
+    // TODO: make sure onCursorMove is only called once per frame
     lastCursorX: f32,
     lastCursorY: f32,
+    // This is used for the cursor trail knife thingy
     cursorXLastUpdate: f32,
     cursorYLastUpdate: f32,
     // the frame time when the cursor was last updated
@@ -563,7 +569,8 @@ const AcerolaGameJamSystem = struct {
     // Cursor speed in world space / second
     cursorVelX: f32,
     cursorVelY: f32,
-    knifeTexture: zrender.TextureHandle,
+    // I'm supposed to use the ECS, and define the knifes behavior separately.
+    // However this is a game jam so I don't really care.
     knifeEntities: [numKnifeParts]ecs.Entity,
     knifeUniforms: [numKnifeParts][2]zrender.Uniform,
     knifeData: [numKnifeParts]KnifeData,
