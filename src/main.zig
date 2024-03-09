@@ -1,6 +1,11 @@
 const std = @import("std");
 const zengine = @import("zengine");
 const zrender = @import("zrender");
+// This is bad. This is so very bad.
+// If you're a fellow jammer looking at this code for inspiration... don't.
+// I don't know if even I understand how half of this insanity works.
+// I thought my first and second ones had bad code... That was before I did this one.
+const kinc = zrender.kinc;
 const zlm = @import("zlm");
 const ecs = @import("ecs");
 
@@ -9,10 +14,11 @@ const ecs = @import("ecs");
 const gravity = -2.0;
 
 // The cursor trail knife thing is made of this many circles that are put together to look like a line.
-// Also, updating and rendering 500 circles is literally like 80% of the games CPU usage lol
-const numKnifeParts = 500;
+// Also, updating and rendering 700 circles is literally like 80% of the games CPU usage lol
+const numKnifeParts = 700;
 
 const GameState = enum {
+    mainMenu,
     slice,
 };
 
@@ -114,6 +120,9 @@ const AcerolaGameJamSystem = struct {
             .knifeEntities = undefined,
             .knifeUniforms = undefined,
             .gameState = undefined,
+            .tutorial1Entity = undefined,
+            .tutorial1Texture = undefined,
+            .tutorial1Uniforms = undefined,
             
         };
     }
@@ -123,8 +132,81 @@ const AcerolaGameJamSystem = struct {
         _ = settings;
     }
 
-    fn initialSetup(this: *@This(), registries: *zengine.RegistrySet) !void {
+    fn setupSlice(this: *@This(), registries: *zengine.RegistrySet) !void {
+        // clear out the ECS completely.
+        // For some aboninable reason there is no 'clear' method in the ecs
+        // so it's deconstructed and reconstructed instead
+        registries.globalEcsRegistry.deinit();
+        registries.globalEcsRegistry = ecs.Registry.init(this.allocator);
         this.gameState = .slice;
+        // set up the bare ECS again (background, foreground, and the cursor trail)
+        try this.setupEcs(registries);
+
+    }
+
+    fn setupEcs(this: *@This(), registries: *zengine.RegistrySet) !void {
+        // yes, the cursor trail knife thing is essential
+        for(0..this.knifeEntities.len) |i|{
+            // knife entity
+            this.knifeEntities[i] = registries.globalEcsRegistry.create();
+            registries.globalEcsRegistry.add(this.knifeEntities[i], zrender.RenderComponent{
+                .mesh = this.quadMesh,
+                .pipeline = this.pipeline,
+                .uniforms = &this.knifeUniforms[i],
+            });
+
+            this.knifeUniforms[i][0] = .{.mat4 = zrender.Mat4.identity};
+            this.knifeUniforms[i][1] = .{.texture = this.knifeTexture};
+        }
+
+        // background entity
+        this.bgEntity = registries.globalEcsRegistry.create();
+        registries.globalEcsRegistry.add(this.bgEntity, zrender.RenderComponent {
+            .mesh = this.quadMesh,
+            .pipeline = this.pipeline,
+            .uniforms = &this.bgUniforms,
+        });
+        // TODO non-identity transform
+        this.bgUniforms[0] = .{.mat4 = zrender.Mat4.identity};
+        this.bgUniforms[1] = .{.texture = this.bgTexture};
+        // foreground entity
+        this.fgEntity = registries.globalEcsRegistry.create();
+        registries.globalEcsRegistry.add(this.fgEntity, zrender.RenderComponent {
+            .mesh = this.quadMesh,
+            .pipeline = this.pipeline,
+            .uniforms = &this.fgUniforms,
+        });
+        // TODO non-identity transform
+        this.fgUniforms[0] = .{.mat4 = zrender.Mat4.identity};
+        this.fgUniforms[1] = .{.texture = this.fgTexture};
+    }
+
+    fn setupMainMenu(this: *@This(), registries: *zengine.RegistrySet) !void {
+        this.gameState = .mainMenu;
+        try this.setupEcs(registries);
+        this.spawnFruit(registries, .tomato, Fruit{
+            .angle = 0,
+            .aVel = 0,
+            .lastXPos = 0,
+            .lastYPos = 0,
+            .scale = 0.07,
+            .xPos = 0,
+            .yPos = 0,
+            .xVel = 0,
+            .yVel = 0, 
+        });
+        this.tutorial1Entity = registries.globalEcsRegistry.create();
+        registries.globalEcsRegistry.add(this.tutorial1Entity, zrender.RenderComponent {
+            .mesh = this.quadMesh,
+            .pipeline = this.pipeline,
+            .uniforms = &this.tutorial1Uniforms,
+        });
+        this.tutorial1Uniforms[0] = .{.mat4 = zrender.Mat4.identity};
+        this.tutorial1Uniforms[1] = .{.texture = this.tutorial1Texture};
+    }
+
+    fn initialSetup(this: *@This(), registries: *zengine.RegistrySet) !void {
+        // Set up everything essential
         this.rand = std.rand.DefaultPrng.init(@bitCast(std.time.microTimestamp()));
         const renderSystem = registries.globalRegistry.getRegister(zrender.ZRenderSystem).?;
         renderSystem.updateDelta = std.time.us_per_s / 120;
@@ -155,46 +237,16 @@ const AcerolaGameJamSystem = struct {
         this.bgTexture = try renderSystem.loadTexture(@embedFile("assets/bg.png"));
         this.fgTexture = try renderSystem.loadTexture(@embedFile("assets/fg.png"));
         this.knifeTexture = try renderSystem.loadTexture(@embedFile("assets/knife.png"));
+        this.tutorial1Texture = try renderSystem.loadTexture(@embedFile("assets/tutorial1.png"));
 
-        for(0..this.knifeEntities.len) |i|{
-            // knife entity
-            this.knifeEntities[i] = registries.globalEcsRegistry.create();
-            registries.globalEcsRegistry.add(this.knifeEntities[i], zrender.RenderComponent{
-                .mesh = this.quadMesh,
-                .pipeline = this.pipeline,
-                .uniforms = &this.knifeUniforms[i],
-            });
-
-            this.knifeUniforms[i][0] = .{.mat4 = zrender.Mat4.identity};
-            this.knifeUniforms[i][1] = .{.texture = this.knifeTexture};
-        }
-        
-
-        // background entity
-        this.bgEntity = registries.globalEcsRegistry.create();
-        registries.globalEcsRegistry.add(this.bgEntity, zrender.RenderComponent {
-            .mesh = this.quadMesh,
-            .pipeline = this.pipeline,
-            .uniforms = &this.bgUniforms,
-        });
-        // TODO non-identity transform
-        this.bgUniforms[0] = .{.mat4 = zrender.Mat4.identity};
-        this.bgUniforms[1] = .{.texture = this.bgTexture};
-        // foreground entity
-        this.fgEntity = registries.globalEcsRegistry.create();
-        registries.globalEcsRegistry.add(this.fgEntity, zrender.RenderComponent {
-            .mesh = this.quadMesh,
-            .pipeline = this.pipeline,
-            .uniforms = &this.fgUniforms,
-        });
-        // TODO non-identity transform
-        this.fgUniforms[0] = .{.mat4 = zrender.Mat4.identity};
-        this.fgUniforms[1] = .{.texture = this.fgTexture};
+        try this.setupMainMenu(registries);
 
         renderSystem.onFrame.sink().connectBound(this, "onFrame");
         renderSystem.onUpdate.sink().connectBound(this, "onUpdate");
         renderSystem.onMousePress.sink().connectBound(this, "onClick");
         renderSystem.onMouseMove.sink().connectBound(this, "onMouseMove");
+
+        
     }
 
     fn spawnFruit(this: *@This(), registries: *zengine.RegistrySet, t: FruitType, fruit: Fruit) void {
@@ -214,12 +266,89 @@ const AcerolaGameJamSystem = struct {
     }
 
     pub fn onFrame(this: *@This(), args: zrender.OnFrameEventArgs) void {
+        const renderSystem = args.registries.globalRegistry.getRegister(zrender.ZRenderSystem).?;
+        const cameraTransform = getCameraTransform(renderSystem.getWindowResolution());
+
+        switch (this.gameState) {
+            .slice => onSliceFrame(this, args, cameraTransform),
+            .mainMenu => onMainMenuFrame(this, args),
+        }
+        // Things that happen no matter the game state
+        // update foreground and background transforms
+        var bgTransform = zlm.Mat4.createTranslationXYZ(0, 0, 0.75);
+        this.bgUniforms[0].mat4 = zlmToZrenderMat4(bgTransform.mul(cameraTransform));
+        var fgTransform = zlm.Mat4.createTranslationXYZ(0, 0, 1.1);
+        fgTransform = zlm.Mat4.createUniformScale(3).mul(fgTransform);
+        this.fgUniforms[0].mat4 = zlmToZrenderMat4(fgTransform.mul(cameraTransform));
+    }
+
+    fn onMainMenuFrame(this: *@This(), args: zrender.OnFrameEventArgs) void {
+        var switchToNext = false;
+        const renderSystem = args.registries.globalRegistry.getRegister(zrender.ZRenderSystem).?;
+        const cameraTransform = getCameraTransform(renderSystem.getWindowResolution());
+        // update fruit without moving them
+        const view = args.registries.globalEcsRegistry.basicView(FruitComponent);
+        var iterator = view.entityIterator();
+        var fruitToRemove = std.ArrayList(ecs.Entity).init(this.allocator);
+        defer fruitToRemove.deinit();
+        var cutFruitToSpawn = std.ArrayList(FruitComponent).init(this.allocator);
+        defer cutFruitToSpawn.deinit();
+        while(iterator.next()) |entity| {
+            // explicit type hint because zls isn't very good at comptime stuff
+            const fruit: *FruitComponent = view.get(entity);
+            // delete fruit that fall offscreen
+            if(fruit.fruit.yPos < -1.5) {
+                fruitToRemove.append(entity) catch @panic("Out of memory!");
+                continue;
+            }
+            const renderComponent = args.registries.globalEcsRegistry.get(zrender.RenderComponent, entity);
+
+            // If the fruit is near the cursor and the cursor is moving greater than a certain speed,
+            // then that fruit gets deleted
+            const fruitCursorDistance = segmentSegmentDistance(this.cursorX, this.cursorY, this.lastCursorX, this.lastCursorY, fruit.fruit.xPos, fruit.fruit.yPos, fruit.fruit.lastXPos, fruit.fruit.lastYPos);
+            const cursorVelocity = this.cursorVelX * this.cursorVelX + this.cursorVelY * this.cursorVelY;
+            if(fruitCursorDistance < fruit.fruit.scale and cursorVelocity > 0.6) {
+                cutFruitToSpawn.append(fruit.*) catch @panic("Out of memory!");
+                fruitToRemove.append(entity) catch @panic("Out of memory!");
+                // switch to next scene
+                switchToNext = true;
+                continue;
+            }
+
+            // Update the render component with the new fruit data
+            const objectTransform = getFruitTransform(fruit.fruit);
+            const transform = objectTransform.mul(cameraTransform);
+            // Sometimes, the renderComponent's reference to uniforms is invalidated when the ECS expands things,
+            // So, set the render component to the correct one
+            renderComponent.uniforms = &fruit.uniforms;
+            renderComponent.uniforms[0] = .{ .mat4 = zlmToZrenderMat4(transform) };
+        }
+        // This is not the best way to make the slices persist from the main menu into slice but it works so who cares anyway
+        if(switchToNext){
+            this.setupSlice(args.registries) catch @panic("failed to switch to slice scene");
+        }
+        for(cutFruitToSpawn.items) |*fruit| {
+            this.spawnFruitSlice(&args.registries.globalEcsRegistry, fruit, 1);
+            this.spawnFruitSlice(&args.registries.globalEcsRegistry, fruit, 2);
+        }
+        // The fruit was already deleted from the screen change
+        // for(fruitToRemove.items) |entity| {
+        //     args.registries.globalEcsRegistry.destroy(entity);
+        // }
+        // Update the tutorial thingies transform
+        {
+            var transform = zlm.Mat4.createScale(-0.5, 0.25, 1);
+            transform = transform.mul(zlm.Mat4.createTranslationXYZ(0, 0.3, 1.0));
+            this.tutorial1Uniforms[0].mat4 = zlmToZrenderMat4(transform.mul(cameraTransform));
+        }
+    }
+
+    fn onSliceFrame(this: *@This(), args: zrender.OnFrameEventArgs, cameraTransform: zlm.Mat4) void {
         this.timeSinceStart += args.delta;
         this.fruitSpawnCountown -= args.delta;
         var random = this.rand.random();
         // Every time @as(@floatFromInt) is needed, I am reminding you how silly this is
         const deltaSeconds: f32 = @as(f32, @floatFromInt(args.delta)) / std.time.us_per_s;
-        const renderSystem = args.registries.globalRegistry.getRegister(zrender.ZRenderSystem).?;
 
         if(this.fruitSpawnCountown < 0) {
             // TODO: add more fruits & bombs
@@ -240,15 +369,9 @@ const AcerolaGameJamSystem = struct {
             // TODO: make this decrease as time continues
             this.fruitSpawnCountown += std.time.us_per_ms * 1000;
         }
-        const cameraTransform = getCameraTransform(renderSystem.getWindowResolution());
         this.updateFruit(args, deltaSeconds, cameraTransform);
         this.updateSlices(args, deltaSeconds, cameraTransform);
-        // update foreground and background transforms
-        var bgTransform = zlm.Mat4.createTranslationXYZ(0, 0, 0.75);
-        this.bgUniforms[0].mat4 = zlmToZrenderMat4(bgTransform.mul(cameraTransform));
-        var fgTransform = zlm.Mat4.createTranslationXYZ(0, 0, 1.1);
-        fgTransform = zlm.Mat4.createUniformScale(3).mul(fgTransform);
-        this.fgUniforms[0].mat4 = zlmToZrenderMat4(fgTransform.mul(cameraTransform));
+
     }
 
     pub fn onUpdate(this: *@This(), args: zrender.OnUpdateEventArgs) void {
@@ -375,7 +498,7 @@ const AcerolaGameJamSystem = struct {
         }
     }
 
-    fn spawnFruitSlice(this: *@This(), ecsRegistry: *ecs.Registry, fruit: *FruitComponent, slice: u32) void {
+    fn spawnFruitSlice(this: *@This(), ecsRegistry: *ecs.Registry, fruit: *const FruitComponent, slice: u32) void {
         const entity = ecsRegistry.create();
         var fruitData = fruit.fruit;
         fruitData.xVel += this.cursorVelX * 0.1;
@@ -494,7 +617,11 @@ const AcerolaGameJamSystem = struct {
 
     pub fn onClick(this: *@This(), args: zrender.OnMousePressEventArgs) void {
         _ = args;
-        _ = this;
+        switch (this.gameState) {
+            .mainMenu => {
+            },
+            .slice => {},
+        }
     }
 
     pub fn onMouseMove(this: *@This(), args: zrender.OnMouseMoveEventArgs) void {
@@ -564,6 +691,7 @@ const AcerolaGameJamSystem = struct {
     fgTexture: zrender.TextureHandle,
     pipeline: zrender.PipelineHandle,
     knifeTexture: zrender.TextureHandle,
+    tutorial1Texture: zrender.TextureHandle,
     timeSinceStart: i64,
     rand: std.rand.DefaultPrng,
     fruitSpawnCountown: i64,
@@ -571,6 +699,8 @@ const AcerolaGameJamSystem = struct {
     bgUniforms: [2]zrender.Uniform,
     fgEntity: ecs.Entity,
     fgUniforms: [2]zrender.Uniform,
+    tutorial1Entity: ecs.Entity,
+    tutorial1Uniforms: [2]zrender.Uniform,
     // Cursor position in world space.
     cursorX: f32,
     cursorY: f32,
