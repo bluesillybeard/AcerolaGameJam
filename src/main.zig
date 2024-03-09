@@ -17,6 +17,20 @@ const gravity = -2.0;
 // Also, updating and rendering 700 circles is literally like 80% of the games CPU usage lol
 const numKnifeParts = 700;
 
+const scoreScaleX = 0.025;
+const scoreScaleY = scoreScaleX * 2;
+
+// A component for a quad that stays in place in worldspace
+const QuadComponent = struct {
+    uniforms: [2]zrender.Uniform,
+    x: f32,
+    y: f32,
+    angle: f32,
+    scaleX: f32,
+    scaleY: f32,
+
+};
+
 const GameState = enum {
     mainMenu,
     slice,
@@ -105,6 +119,8 @@ const AcerolaGameJamSystem = struct {
             .knifeData = [1]KnifeData{.{.number = numKnifeParts, .x = 0, .y = 0}} ** numKnifeParts,
             .cursorXLastUpdate = 0,
             .cursorYLastUpdate = 0,
+            .score = 0,
+            .scoreEntities = std.ArrayList(ecs.Entity).init(heapAllocator),
             // these undefines are ok since they are set within SystemInit
             .quadMesh = undefined,
             .fruitTextures = undefined,
@@ -123,7 +139,7 @@ const AcerolaGameJamSystem = struct {
             .tutorial1Entity = undefined,
             .tutorial1Texture = undefined,
             .tutorial1Uniforms = undefined,
-            
+            .numberTextures = undefined,
         };
     }
 
@@ -139,9 +155,61 @@ const AcerolaGameJamSystem = struct {
         registries.globalEcsRegistry.deinit();
         registries.globalEcsRegistry = ecs.Registry.init(this.allocator);
         this.gameState = .slice;
+        this.score = 0;
         // set up the bare ECS again (background, foreground, and the cursor trail)
         try this.setupEcs(registries);
+        try this.updateScoreDisplay(registries);
+    }
 
+    fn updateScoreDisplay(this: *@This(), registries: *zengine.RegistrySet) !void {
+        // clear out old entites
+        for(this.scoreEntities.items) |entity| {
+            registries.globalEcsRegistry.destroy(entity);
+        }
+        this.scoreEntities.clearRetainingCapacity();
+        // "print" the score
+        const scoreStr = try std.fmt.allocPrint(this.allocator, "{}", .{this.score});
+        defer this.allocator.free(scoreStr);
+        // create the quads for the numbers
+        for(scoreStr, 0..) |character, index| {
+            const texture = switch (character) {
+                '0' => this.numberTextures[0],
+                '1' => this.numberTextures[1],
+                '2' => this.numberTextures[2],
+                '3' => this.numberTextures[3],
+                '4' => this.numberTextures[4],
+                '5' => this.numberTextures[5],
+                '6' => this.numberTextures[6],
+                '7' => this.numberTextures[7],
+                '8' => this.numberTextures[8],
+                '9' => this.numberTextures[9],
+                else => this.knifeTexture,
+            };
+            const quad = QuadComponent{
+                .scaleX = scoreScaleX,
+                .scaleY = scoreScaleY,
+                .x = 0.9 - scoreScaleX - scoreScaleX * @as(f32, @floatFromInt(index)) * 2.0,
+                .y = 0.9 - scoreScaleY,
+                .angle = 0,
+                .uniforms = undefined,
+            };
+            const entity = this.spawnQuad(registries, quad, texture);
+            try this.scoreEntities.append(entity);
+        }
+    }
+
+    fn spawnQuad(this: *@This(), registries: *zengine.RegistrySet, quad: QuadComponent, texture: zrender.TextureHandle) ecs.Entity {
+        const entity = registries.globalEcsRegistry.create();
+        registries.globalEcsRegistry.add(entity, quad);
+        const quadPtr = registries.globalEcsRegistry.get(QuadComponent, entity);
+        registries.globalEcsRegistry.add(entity, zrender.RenderComponent{
+            .mesh = this.quadMesh,
+            .pipeline = this.pipeline,
+            .uniforms = &quadPtr.uniforms,
+        });
+        quadPtr.uniforms[0] = .{.mat4 = zrender.Mat4.identity};
+        quadPtr.uniforms[1] = .{.texture = texture};
+        return entity;
     }
 
     fn setupEcs(this: *@This(), registries: *zengine.RegistrySet) !void {
@@ -238,6 +306,19 @@ const AcerolaGameJamSystem = struct {
         this.fgTexture = try renderSystem.loadTexture(@embedFile("assets/fg.png"));
         this.knifeTexture = try renderSystem.loadTexture(@embedFile("assets/knife.png"));
         this.tutorial1Texture = try renderSystem.loadTexture(@embedFile("assets/tutorial1.png"));
+
+        this.numberTextures = [10]zrender.TextureHandle{
+            try renderSystem.loadTexture(@embedFile("assets/0.png")),
+            try renderSystem.loadTexture(@embedFile("assets/1.png")),
+            try renderSystem.loadTexture(@embedFile("assets/2.png")),
+            try renderSystem.loadTexture(@embedFile("assets/3.png")),
+            try renderSystem.loadTexture(@embedFile("assets/4.png")),
+            try renderSystem.loadTexture(@embedFile("assets/5.png")),
+            try renderSystem.loadTexture(@embedFile("assets/6.png")),
+            try renderSystem.loadTexture(@embedFile("assets/7.png")),
+            try renderSystem.loadTexture(@embedFile("assets/8.png")),
+            try renderSystem.loadTexture(@embedFile("assets/9.png")),
+        };
 
         try this.setupMainMenu(registries);
 
@@ -371,6 +452,7 @@ const AcerolaGameJamSystem = struct {
         }
         this.updateFruit(args, deltaSeconds, cameraTransform);
         this.updateSlices(args, deltaSeconds, cameraTransform);
+        this.updateQuads(args, cameraTransform);
 
     }
 
@@ -492,9 +574,32 @@ const AcerolaGameJamSystem = struct {
             const fruit = args.registries.globalEcsRegistry.get(FruitComponent, entity);
             this.spawnFruitSlice(&args.registries.globalEcsRegistry, fruit, 1);
             this.spawnFruitSlice(&args.registries.globalEcsRegistry, fruit, 2);
+            std.debug.print("score: {}\n", .{this.score});
+            switch (fruit.t) {
+                .tomato => this.score += 100,
+                .count => {},
+            }
+             this.updateScoreDisplay(args.registries) catch unreachable;
         }
         for(fruitToRemove.items) |entity| {
             args.registries.globalEcsRegistry.destroy(entity);
+        }
+    }
+
+    fn updateQuads(this: *@This(), args: zrender.OnFrameEventArgs, cameraTransform: zlm.Mat4) void {
+        _ = this;
+        const view = args.registries.globalEcsRegistry.basicView(QuadComponent);
+        var iterator = view.entityIterator();
+        while(iterator.next()) |entity| {
+            // get the components
+            const quad: *QuadComponent = args.registries.globalEcsRegistry.get(QuadComponent, entity);
+            const render = args.registries.globalEcsRegistry.get(zrender.RenderComponent, entity);
+            var transform = zlm.Mat4.createAngleAxis(zlm.Vec3.unitZ, quad.angle);
+            transform = transform.mul(zlm.Mat4.createScale(-quad.scaleX, quad.scaleY, 1));
+            transform = transform.mul(zlm.Mat4.createTranslationXYZ(quad.x, quad.y, 2));
+            transform = transform.mul(cameraTransform);
+            quad.uniforms[0].mat4 = zlmToZrenderMat4(transform);
+            render.uniforms = &quad.uniforms;
         }
     }
 
@@ -651,7 +756,7 @@ const AcerolaGameJamSystem = struct {
     }
 
     pub fn deinit(this: *@This()) void {
-        _ = this;
+        this.scoreEntities.deinit();
     }
 
     fn zlmToZrenderMat4(matrix: zlm.Mat4) zrender.Mat4 {
@@ -723,6 +828,9 @@ const AcerolaGameJamSystem = struct {
     knifeData: [numKnifeParts]KnifeData,
     currentKnifeIndex: usize,
     gameState: GameState,
+    score: u64,
+    numberTextures: [10]zrender.TextureHandle,
+    scoreEntities: std.ArrayList(ecs.Entity),
 };
 
 pub fn main() !void {
