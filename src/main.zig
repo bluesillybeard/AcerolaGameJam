@@ -20,6 +20,37 @@ const numKnifeParts = 700;
 const scoreScaleX = 0.025;
 const scoreScaleY = scoreScaleX * 2;
 
+// This is the primary balancing factor of the game: levels.
+
+const Level = struct {
+    // the length of this level in microseconds
+    length: i64,
+    // how many fruit of each type to spawn.
+    fruits: []const FruitType,
+    fruitNums: []const u32,
+};
+
+const levels = [_]Level{
+    // Level one: a bunch of tomatos
+    .{
+        .length = 30 * std.time.us_per_s,
+        .fruits = &[_]FruitType{.tomato},
+        .fruitNums = &[_]u32{30},
+    },
+    // Level two: a single bomb
+    .{
+        .length = 5 * std.time.us_per_s,
+        .fruits = &[_]FruitType{.bomb},
+        .fruitNums = &[_]u32{1},
+    },
+    // A mix of bombs and tomatos for the next 2 minutes
+    .{
+        .length = 120 * std.time.us_per_s,
+        .fruits = &[_]FruitType{.bomb, .tomato},
+        .fruitNums = &[_]u32{10, 90},
+    }
+};
+
 // A component for a quad that stays in place in worldspace
 const QuadComponent = struct {
     uniforms: [2]zrender.Uniform,
@@ -57,6 +88,7 @@ const KnifeData = struct {
 
 const FruitType = enum(u32) {
     tomato = 0,
+    bomb,
     count,
 };
 
@@ -121,6 +153,9 @@ const AcerolaGameJamSystem = struct {
             .cursorYLastUpdate = 0,
             .score = 0,
             .scoreEntities = std.ArrayList(ecs.Entity).init(heapAllocator),
+            .level = 0,
+            .levelFruitNums = std.ArrayList(u32).init(heapAllocator),
+            .levelFruitTypes = std.ArrayList(FruitType).init(heapAllocator),
             // these undefines are ok since they are set within SystemInit
             .quadMesh = undefined,
             .fruitTextures = undefined,
@@ -140,6 +175,7 @@ const AcerolaGameJamSystem = struct {
             .tutorial1Texture = undefined,
             .tutorial1Uniforms = undefined,
             .numberTextures = undefined,
+            .levelFruitCooldownStart = undefined,
         };
     }
 
@@ -156,6 +192,7 @@ const AcerolaGameJamSystem = struct {
         registries.globalEcsRegistry = ecs.Registry.init(this.allocator);
         this.gameState = .slice;
         this.score = 0;
+        this.setLevel(0);
         // set up the bare ECS again (background, foreground, and the cursor trail)
         try this.setupEcs(registries);
         try this.updateScoreDisplay(registries);
@@ -188,6 +225,7 @@ const AcerolaGameJamSystem = struct {
             const quad = QuadComponent{
                 .scaleX = scoreScaleX,
                 .scaleY = scoreScaleY,
+                // Hmm, a float cast. How odd.
                 .x = 0.9 - scoreScaleX - scoreScaleX * @as(f32, @floatFromInt(index)) * 2.0,
                 .y = 0.9 - scoreScaleY,
                 .angle = 0,
@@ -202,12 +240,15 @@ const AcerolaGameJamSystem = struct {
         const entity = registries.globalEcsRegistry.create();
         registries.globalEcsRegistry.add(entity, quad);
         const quadPtr = registries.globalEcsRegistry.get(QuadComponent, entity);
-        registries.globalEcsRegistry.add(entity, zrender.RenderComponent{
+        registries.globalEcsRegistry.add(entity, zrender.RenderComponent {
             .mesh = this.quadMesh,
             .pipeline = this.pipeline,
             .uniforms = &quadPtr.uniforms,
         });
-        quadPtr.uniforms[0] = .{.mat4 = zrender.Mat4.identity};
+        var transform = getQuadTransform(quadPtr);
+        const cameraTransform = getCameraTransform(registries.globalRegistry.getRegister(zrender.ZRenderSystem).?.getWindowResolution());
+        transform = transform.mul(cameraTransform);
+        quadPtr.uniforms[0] = .{.mat4 = zlmToZrenderMat4(transform)};
         quadPtr.uniforms[1] = .{.texture = texture};
         return entity;
     }
@@ -295,11 +336,18 @@ const AcerolaGameJamSystem = struct {
             0, 1, 2, 2, 3, 0,
         }, this.pipeline);
 
+        const bombTexture = try renderSystem.loadTexture(@embedFile("assets/bomb.png"));
+
         this.fruitTextures = [@intFromEnum(FruitType.count)]FruitTextureSet{
             .{
                 .whole = try renderSystem.loadTexture(@embedFile("assets/tomato.png")),
                 .part1 = try renderSystem.loadTexture(@embedFile("assets/tomato1.png")),
                 .part2 = try renderSystem.loadTexture(@embedFile("assets/tomato2.png")),
+            },
+            .{
+                .whole = bombTexture,
+                .part1 = bombTexture,
+                .part2 = bombTexture,
             }
         };
         this.bgTexture = try renderSystem.loadTexture(@embedFile("assets/bg.png"));
@@ -336,7 +384,7 @@ const AcerolaGameJamSystem = struct {
         registries.globalEcsRegistry.add(entity, FruitComponent {
             .uniforms = [_]zrender.Uniform{.{.mat4 = zrender.Mat4.identity}, .{.texture = textures.whole}},
             .fruit = fruit,
-            .t = .tomato,
+            .t = t,
         });
         const fruitComponent = registries.globalEcsRegistry.get(FruitComponent, entity);
         registries.globalEcsRegistry.add(entity, zrender.RenderComponent{
@@ -432,8 +480,28 @@ const AcerolaGameJamSystem = struct {
         const deltaSeconds: f32 = @as(f32, @floatFromInt(args.delta)) / std.time.us_per_s;
 
         if(this.fruitSpawnCountown < 0) {
-            // TODO: add more fruits & bombs
-            this.spawnFruit(args.registries, FruitType.tomato, Fruit {
+            //total the number of fruit
+            var fruitLeftInLevel: u32 = 0;
+            for(this.levelFruitNums.items) |num| {
+                fruitLeftInLevel += num;
+            }
+            var randomFruit = random.intRangeLessThan(u32, 0, fruitLeftInLevel);
+            var foundFruitIndex = false;
+            var randomFruitIndex: usize = 0;
+            // figure out what actual fruit type that fruit corresponts to
+            for(0..this.levelFruitNums.items.len) |i| {
+                // see if this is the index our fruit is in
+                if(this.levelFruitNums.items[i] >= randomFruit){
+                    randomFruitIndex = i;
+                    foundFruitIndex = true;
+                    break;
+                }
+                // If it isn't, continue
+                randomFruit -= this.levelFruitNums.items[i];
+            }
+            if(!foundFruitIndex) @panic("oh no!");
+            this.levelFruitNums.items[randomFruitIndex] -= 1;
+            this.spawnFruit(args.registries, this.levelFruitTypes.items[randomFruitIndex], Fruit {
                 .angle = 0,
                 .aVel = random.float(f32) * 3.0 - (3.0 / 2.0),
                 .scale = 0.07,
@@ -447,13 +515,34 @@ const AcerolaGameJamSystem = struct {
                 // TODO: randomize vertical velocity
                 .yVel = 3,
             });
-            // TODO: make this decrease as time continues
-            this.fruitSpawnCountown += std.time.us_per_ms * 1000;
+            this.fruitSpawnCountown += this.levelFruitCooldownStart;
+            std.debug.print("Level {} Spawned a {}, there are {} left.\n", .{this.level, this.levelFruitTypes.items[randomFruitIndex], this.levelFruitNums.items[randomFruitIndex]});
+            // If there are no fruit left, go to the next level
+            if(fruitLeftInLevel <= 1) {
+                this.setLevel(this.level+1);
+            }
         }
         this.updateFruit(args, deltaSeconds, cameraTransform);
         this.updateSlices(args, deltaSeconds, cameraTransform);
         this.updateQuads(args, cameraTransform);
 
+    }
+
+    fn setLevel(this: *@This(), level: usize) void {
+        this.level = level;
+        this.levelFruitNums.clearRetainingCapacity();
+        this.levelFruitTypes.clearRetainingCapacity();
+        for(levels[this.level].fruitNums) |v| {
+            this.levelFruitNums.append(v) catch unreachable;
+        }
+        for(levels[this.level].fruits) |v| {
+            this.levelFruitTypes.append(v) catch unreachable;
+        }
+        var fruitInNextLevel: u32 = 0;
+        for(this.levelFruitNums.items) |num| {
+            fruitInNextLevel += num;
+        }
+        this.levelFruitCooldownStart = @divTrunc(levels[this.level].length, fruitInNextLevel);
     }
 
     pub fn onUpdate(this: *@This(), args: zrender.OnUpdateEventArgs) void {
@@ -465,6 +554,7 @@ const AcerolaGameJamSystem = struct {
         const knifeDotsPerUpdate = @divExact(numKnifeParts, 20);
         for(0..knifeDotsPerUpdate) |i| {
             // lerp the cursor position to create a line between where it was last update and where it is now
+            // Also, mandatory note about Zig's silly float casting rules
             const w = @as(f32, @floatFromInt(i)) / knifeDotsPerUpdate;
             // lerp it backwards since this iterates away from the cursor.
             const cursorX = this.cursorX * (1 - w) + this.cursorXLastUpdate * w;
@@ -482,6 +572,7 @@ const AcerolaGameJamSystem = struct {
             const data = &this.knifeData[i];
             // get the transform
             var knifeTransform = zlm.Mat4.createTranslationXYZ(data.x, data.y, 1.2);
+            // Another silly float cast
             knifeTransform = zlm.Mat4.createUniformScale((@as(f32, @floatFromInt(data.number)) / numKnifeParts) * 0.01).mul(knifeTransform);
             this.knifeUniforms[this.currentKnifeIndex][0].mat4 = zlmToZrenderMat4(knifeTransform.mul(cameraTransform));
             // scale it down slightly
@@ -574,12 +665,13 @@ const AcerolaGameJamSystem = struct {
             const fruit = args.registries.globalEcsRegistry.get(FruitComponent, entity);
             this.spawnFruitSlice(&args.registries.globalEcsRegistry, fruit, 1);
             this.spawnFruitSlice(&args.registries.globalEcsRegistry, fruit, 2);
-            std.debug.print("score: {}\n", .{this.score});
             switch (fruit.t) {
                 .tomato => this.score += 100,
+                // TODO: play some kind of explode animation and go back to the main menu
+                .bomb => this.score = 0,
                 .count => {},
             }
-             this.updateScoreDisplay(args.registries) catch unreachable;
+            this.updateScoreDisplay(args.registries) catch unreachable;
         }
         for(fruitToRemove.items) |entity| {
             args.registries.globalEcsRegistry.destroy(entity);
@@ -594,13 +686,18 @@ const AcerolaGameJamSystem = struct {
             // get the components
             const quad: *QuadComponent = args.registries.globalEcsRegistry.get(QuadComponent, entity);
             const render = args.registries.globalEcsRegistry.get(zrender.RenderComponent, entity);
-            var transform = zlm.Mat4.createAngleAxis(zlm.Vec3.unitZ, quad.angle);
-            transform = transform.mul(zlm.Mat4.createScale(-quad.scaleX, quad.scaleY, 1));
-            transform = transform.mul(zlm.Mat4.createTranslationXYZ(quad.x, quad.y, 2));
+            var transform = getQuadTransform(quad);
             transform = transform.mul(cameraTransform);
             quad.uniforms[0].mat4 = zlmToZrenderMat4(transform);
             render.uniforms = &quad.uniforms;
         }
+    }
+
+    fn getQuadTransform(quad: *QuadComponent) zlm.Mat4 {
+        var transform = zlm.Mat4.createAngleAxis(zlm.Vec3.unitZ, quad.angle);
+        transform = transform.mul(zlm.Mat4.createScale(-quad.scaleX, quad.scaleY, 1));
+        transform = transform.mul(zlm.Mat4.createTranslationXYZ(quad.x, quad.y, 2));
+        return transform;
     }
 
     fn spawnFruitSlice(this: *@This(), ecsRegistry: *ecs.Registry, fruit: *const FruitComponent, slice: u32) void {
@@ -757,6 +854,8 @@ const AcerolaGameJamSystem = struct {
 
     pub fn deinit(this: *@This()) void {
         this.scoreEntities.deinit();
+        this.levelFruitNums.deinit();
+        this.levelFruitTypes.deinit();
     }
 
     fn zlmToZrenderMat4(matrix: zlm.Mat4) zrender.Mat4 {
@@ -799,7 +898,6 @@ const AcerolaGameJamSystem = struct {
     tutorial1Texture: zrender.TextureHandle,
     timeSinceStart: i64,
     rand: std.rand.DefaultPrng,
-    fruitSpawnCountown: i64,
     bgEntity: ecs.Entity,
     bgUniforms: [2]zrender.Uniform,
     fgEntity: ecs.Entity,
@@ -831,6 +929,17 @@ const AcerolaGameJamSystem = struct {
     score: u64,
     numberTextures: [10]zrender.TextureHandle,
     scoreEntities: std.ArrayList(ecs.Entity),
+    // WORKING
+    // the current level
+    level: usize,
+    // how many fruit of each type to spawn.
+    levelFruitTypes: std.ArrayList(FruitType),
+    levelFruitNums: std.ArrayList(u32),
+    // the amount of time between spawning fruit
+    levelFruitCooldownStart: i64,
+    // the amount of time left before spawning the next fruit
+    fruitSpawnCountown: i64,
+
 };
 
 pub fn main() !void {
