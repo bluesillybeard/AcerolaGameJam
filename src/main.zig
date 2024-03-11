@@ -33,15 +33,15 @@ const Level = struct {
 const levels = [_]Level{
     // Level one: a bunch of tomatos
     .{
-        .length = 30 * std.time.us_per_s,
+        .length = 10 * std.time.us_per_s,
         .fruits = &[_]FruitType{.tomato},
-        .fruitNums = &[_]u32{30},
+        .fruitNums = &[_]u32{7},
     },
     // Level two: a single bomb
     .{
-        .length = 10 * std.time.us_per_s,
+        .length = 3 * std.time.us_per_s,
         .fruits = &[_]FruitType{.bomb},
-        .fruitNums = &[_]u32{2},
+        .fruitNums = &[_]u32{1},
     },
     // A mix of bombs and tomatos for the next 2 minutes
     .{
@@ -192,6 +192,7 @@ const AcerolaGameJamSystem = struct {
             .level = 0,
             .levelFruitNums = std.ArrayList(u32).init(heapAllocator),
             .levelFruitTypes = std.ArrayList(FruitType).init(heapAllocator),
+            .mainMenuCooldown = 0,
             // these undefines are ok since they are set within SystemInit
             .quadMesh = undefined,
             .fruitTextures = undefined,
@@ -353,6 +354,7 @@ const AcerolaGameJamSystem = struct {
         });
         this.tutorial1Uniforms[0] = .{.mat4 = zrender.Mat4.identity};
         this.tutorial1Uniforms[1] = .{.texture = this.tutorial1Texture};
+        this.mainMenuCooldown = 2 * std.time.us_per_s;
     }
 
     fn initialSetup(this: *@This(), registries: *zengine.RegistrySet) !void {
@@ -477,7 +479,7 @@ const AcerolaGameJamSystem = struct {
             // then that fruit gets deleted
             const fruitCursorDistance = segmentSegmentDistance(this.cursorX, this.cursorY, this.lastCursorX, this.lastCursorY, fruit.fruit.xPos, fruit.fruit.yPos, fruit.fruit.lastXPos, fruit.fruit.lastYPos);
             const cursorVelocity = this.cursorVelX * this.cursorVelX + this.cursorVelY * this.cursorVelY;
-            if(fruitCursorDistance < fruit.fruit.scale and cursorVelocity > 0.6) {
+            if(this.mainMenuCooldown < 0 and fruitCursorDistance < fruit.fruit.scale and cursorVelocity > 0.6) {
                 cutFruitToSpawn.append(fruit.*) catch @panic("Out of memory!");
                 fruitToRemove.append(entity) catch @panic("Out of memory!");
                 // switch to next scene
@@ -511,6 +513,7 @@ const AcerolaGameJamSystem = struct {
             transform = transform.mul(zlm.Mat4.createTranslationXYZ(0, 0.3, 1.0));
             this.tutorial1Uniforms[0].mat4 = zlmToZrenderMat4(transform.mul(cameraTransform));
         }
+        this.mainMenuCooldown -= args.delta;
     }
 
     fn onSliceFrame(this: *@This(), args: zrender.OnFrameEventArgs, cameraTransform: zlm.Mat4) void {
@@ -566,17 +569,22 @@ const AcerolaGameJamSystem = struct {
                 .xVel = newfruitXVelocity,
                 .yVel = newfruitYVelocity,
             });
-            this.fruitSpawnCountown += this.levelFruitCooldownStart;
             std.debug.print("Level {} Spawned a {}, there are {} left.\n", .{this.level, this.levelFruitTypes.items[randomFruitIndex], this.levelFruitNums.items[randomFruitIndex]});
             // If this fruit type ran out, remove it
             if(this.levelFruitNums.items[randomFruitIndex] == 0) {
                 _ = this.levelFruitTypes.swapRemove(randomFruitIndex);
                 _ = this.levelFruitNums.swapRemove(randomFruitIndex);
             }
+            // Add the first half of the cooldown before the level change.
+            // do it in halves so that level changes are less sudden.
+            // Specifically level 1 is very different from 0 and 2, which is a bit of a shock when it takes forever from level 0 and level 2 begins immediately after level 1 ends
+            this.fruitSpawnCountown += @divTrunc(this.levelFruitCooldownStart, 2);
             // If there are no fruit left, go to the next level
             if(fruitLeftInLevel <= 1) {
                 this.setLevel(this.level+1);
             }
+            // Add the second half of the cooldown after the level change
+            this.fruitSpawnCountown += @divTrunc(this.levelFruitCooldownStart, 2);
         }
         this.updateFruit(args, deltaSeconds, cameraTransform);
         this.updateSlices(args, deltaSeconds, cameraTransform);
@@ -1003,7 +1011,9 @@ const AcerolaGameJamSystem = struct {
     levelFruitCooldownStart: i64,
     // the amount of time left before spawning the next fruit
     fruitSpawnCountown: i64,
-
+    // When hitting a bomb, it's too easy to immediately hit the fruit in the main menu and start the next game accidentally.
+    // This cooldown avoids that.
+    mainMenuCooldown: i64,
 };
 
 pub fn main() !void {
