@@ -15,6 +15,7 @@ const gravity = -2.0;
 
 // The cursor trail knife thing is made of this many circles that are put together to look like a line.
 // Also, updating and rendering 700 circles is literally like 80% of the games CPU usage lol
+// 700 seemed like a good balance between performance and quality.
 const numKnifeParts = 700;
 
 const scoreScaleX = 0.025;
@@ -28,64 +29,119 @@ const Level = struct {
     // how many fruit of each type to spawn.
     fruits: []const FruitType,
     fruitNums: []const u32,
+    abberation: zlm.Mat4,
 };
 
-const levels = [_]Level{
-    // Level one: a bunch of tomatos
-    .{
-        .length = 10 * std.time.us_per_s,
-        .fruits = &[_]FruitType{.tomato},
-        .fruitNums = &[_]u32{7},
-    },
-    // Level two: a single bomb
-    .{
-        .length = 3 * std.time.us_per_s,
-        .fruits = &[_]FruitType{.bomb},
-        .fruitNums = &[_]u32{1},
-    },
-    // A mix of bombs and tomatos for the next 2 minutes
-    .{
-        .length = 120 * std.time.us_per_s,
-        .fruits = &[_]FruitType{.bomb, .tomato},
-        .fruitNums = &[_]u32{10, 90},
-    },
-    .{
-        .length = 120 * std.time.us_per_s,
-        .fruits = &[_]FruitType{.bomb, .tomato},
-        .fruitNums = &[_]u32{40, 150},
-    },
-    .{
-        .length = 120 * std.time.us_per_s,
-        .fruits = &[_]FruitType{.bomb, .tomato},
-        .fruitNums = &[_]u32{60, 200},
-    },
-    .{
-        .length = 120 * std.time.us_per_s,
-        .fruits = &[_]FruitType{.bomb, .tomato},
-        .fruitNums = &[_]u32{100, 150},
-    },
-    .{
-        .length = 120 * std.time.us_per_s,
-        .fruits = &[_]FruitType{.bomb, .tomato},
-        .fruitNums = &[_]u32{120, 140},
-    },
-    .{
-        .length = 120 * std.time.us_per_s,
-        .fruits = &[_]FruitType{.bomb, .tomato},
-        .fruitNums = &[_]u32{170, 100},
-    },
-    .{
-        .length = 120 * std.time.us_per_s,
-        .fruits = &[_]FruitType{.bomb, .tomato},
-        .fruitNums = &[_]u32{180, 40},
-    },
-    // This last level is really really really long, in hopes that players either die or give up at some point in the 4 years it takes this level to run.
-    .{
-        .length = 120000000 * std.time.us_per_s,
-        .fruits = &[_]FruitType{.bomb, .tomato},
-        .fruitNums = &[_]u32{200000000, 30000000},
-    },
-};
+const firstLevel = 0;
+
+pub fn makeLevels() [14]Level {
+    @setEvalBranchQuota(100000);
+    return [_]Level{
+        // 0: bunch of tomatos
+        .{
+            .length = 10 * std.time.us_per_s,
+            .fruits = &[_]FruitType{.tomato},
+            .fruitNums = &[_]u32{7},
+            .abberation = zlm.Mat4.identity,
+        },
+        // 1: a single bomb
+        .{
+            .length = 3 * std.time.us_per_s,
+            .fruits = &[_]FruitType{.bomb},
+            .fruitNums = &[_]u32{1},
+            .abberation = zlm.Mat4.identity,
+        },
+        // 2: A mix of bombs and tomatos for the next minute
+        .{
+            .length = 60 * std.time.us_per_s,
+            .fruits = &[_]FruitType{.bomb, .tomato},
+            .fruitNums = &[_]u32{5, 45},
+            .abberation = zlm.Mat4.identity,
+            
+        },
+        // 3: Now we start to introduce the abberation by scaling the knife movement a bit.
+        // Players may or may not notice this because it's surprisingly subtle
+        .{
+            .length = 30 * std.time.us_per_s,
+            .fruits = &[_]FruitType{.bomb, .tomato},
+            .fruitNums = &[_]u32{3, 23},
+            .abberation = AcerolaGameJamSystem.createAbberationTransform(0, 0, 1.5, 1, 0),
+        },
+        // 4: A bit of rotation
+        .{
+            .length = 60 * std.time.us_per_s,
+            .fruits = &[_]FruitType{.tomato},
+            .fruitNums = &[_]u32{50},
+            .abberation = AcerolaGameJamSystem.createAbberationTransform(0, 0, 1.5, 1, std.math.pi / 8.0),
+        },
+        // 5: add some more bombs
+        .{
+            .length = 30 * std.time.us_per_s,
+            .fruits = &[_]FruitType{.bomb, .tomato},
+            .fruitNums = &[_]u32{5, 25},
+            .abberation = AcerolaGameJamSystem.createAbberationTransform(0, 0, 1.5, 1, std.math.pi / 8.0),
+        },
+        // 6: make the rotation more extreme
+        .{
+            .length = 60 * std.time.us_per_s,
+            .fruits = &[_]FruitType{.bomb, .tomato},
+            .fruitNums = &[_]u32{5, 50},
+            .abberation = AcerolaGameJamSystem.createAbberationTransform(0, 0, 1.5, 1, std.math.pi / 4.0),
+        },
+        // 7: now for offset
+        .{
+            .length = 60 * std.time.us_per_s,
+            .fruits = &[_]FruitType{.bomb, .tomato},
+            .fruitNums = &[_]u32{5, 50},
+            .abberation = AcerolaGameJamSystem.createAbberationTransform(0.15, 0, 1.5, 1, std.math.pi / 4.0),
+        },
+        // 8: Change everything back to normal
+        .{
+            .length = 60 * std.time.us_per_s,
+            .fruits = &[_]FruitType{.bomb, .tomato},
+            .fruitNums = &[_]u32{5, 50},
+            .abberation = AcerolaGameJamSystem.createAbberationTransform(0, 0, 1, 1, 0),
+        },
+        // 9: invert X pos
+        .{
+            .length = 60 * std.time.us_per_s,
+            .fruits = &[_]FruitType{.bomb, .tomato},
+            .fruitNums = &[_]u32{5, 50},
+            .abberation = AcerolaGameJamSystem.createAbberationTransform(0, 0, -1, 1, 0),
+        },
+        // 10: invert X pos and rotate
+        .{
+            .length = 120 * std.time.us_per_s,
+            .fruits = &[_]FruitType{.bomb, .tomato},
+            .fruitNums = &[_]u32{10, 100},
+            .abberation = AcerolaGameJamSystem.createAbberationTransform(0, 0, -1, 1, std.math.pi / 8.0),
+        },
+        // 11: invert X pos and rotate 45 degrees
+        .{
+            .length = 120 * std.time.us_per_s,
+            .fruits = &[_]FruitType{.bomb, .tomato},
+            .fruitNums = &[_]u32{10, 100},
+            .abberation = AcerolaGameJamSystem.createAbberationTransform(0, 0, -1, 1, std.math.pi / 4.0),
+        },
+        // 11: invert X pos and rotate 90 degrees
+        .{
+            .length = 120 * std.time.us_per_s,
+            .fruits = &[_]FruitType{.bomb, .tomato},
+            .fruitNums = &[_]u32{10, 100},
+            .abberation = AcerolaGameJamSystem.createAbberationTransform(0, 0, -1, 1, std.math.pi / 2.0),
+        },
+        // This last level is really really really long and extremely dificult
+        .{
+            .length = 6000000 * std.time.us_per_s,
+            .fruits = &[_]FruitType{.bomb, .tomato},
+            .fruitNums = &[_]u32{5000000, 5000000},
+            .abberation = AcerolaGameJamSystem.createAbberationTransform(0, 0, -1.5, 0.5, std.math.pi / 2.1),
+        },
+    };
+}
+
+// All of these comptime matrix muls cause a lot of branches so the compiler needs to be told to increase the limit
+const levels = makeLevels();
 
 // A component for a quad that stays in place in worldspace
 const QuadComponent = struct {
@@ -95,7 +151,6 @@ const QuadComponent = struct {
     angle: f32,
     scaleX: f32,
     scaleY: f32,
-
 };
 
 const GameState = enum {
@@ -178,15 +233,17 @@ const AcerolaGameJamSystem = struct {
             .fruitSpawnCountown = 0,
             .cursorX = 0,
             .cursorY = 0,
-            .lastCursorX = 0,
-            .lastCursorY = 0,
+            .knifeX = 0,
+            .knifeY = 0,
+            .lastKnifeX = 0,
+            .lastKnifeY = 0,
             .lastCursorUpdate = 0,
-            .cursorVelX = 0,
-            .cursorVelY = 0,
+            .knifeVelX = 0,
+            .knifeVelY = 0,
             .currentKnifeIndex = 0,
             .knifeData = [1]KnifeData{.{.number = numKnifeParts, .x = 0, .y = 0}} ** numKnifeParts,
-            .cursorXLastUpdate = 0,
-            .cursorYLastUpdate = 0,
+            .knifeXLastUpdate = 0,
+            .knifeYLastUpdate = 0,
             .score = 0,
             .scoreEntities = std.ArrayList(ecs.Entity).init(heapAllocator),
             .level = 0,
@@ -233,10 +290,13 @@ const AcerolaGameJamSystem = struct {
         try this.clearEcs(registries);
         this.gameState = .slice;
         this.score = 0;
-        this.setLevel(0);
+        this.setLevel(firstLevel);
         // set up the bare ECS again (background, foreground, and the cursor trail)
         try this.setupEcs(registries);
         try this.updateScoreDisplay(registries);
+        // TO make up for the fact that ZRender doesn't have this function,
+        // Kinc is exposed so I can do dumb stuff like this
+        kinc.kinc_mouse_lock(0);
     }
 
     fn updateScoreDisplay(this: *@This(), registries: *zengine.RegistrySet) !void {
@@ -355,6 +415,8 @@ const AcerolaGameJamSystem = struct {
         this.tutorial1Uniforms[0] = .{.mat4 = zrender.Mat4.identity};
         this.tutorial1Uniforms[1] = .{.texture = this.tutorial1Texture};
         this.mainMenuCooldown = 2 * std.time.us_per_s;
+        this.setLevel(firstLevel);
+        kinc.kinc_mouse_unlock();
     }
 
     fn initialSetup(this: *@This(), registries: *zengine.RegistrySet) !void {
@@ -417,8 +479,6 @@ const AcerolaGameJamSystem = struct {
         renderSystem.onUpdate.sink().connectBound(this, "onUpdate");
         renderSystem.onMousePress.sink().connectBound(this, "onClick");
         renderSystem.onMouseMove.sink().connectBound(this, "onMouseMove");
-
-        
     }
 
     fn spawnFruit(this: *@This(), registries: *zengine.RegistrySet, t: FruitType, fruit: Fruit) void {
@@ -438,9 +498,10 @@ const AcerolaGameJamSystem = struct {
     }
 
     pub fn onFrame(this: *@This(), args: zrender.OnFrameEventArgs) void {
+        this.timeSinceStart += args.delta;
         const renderSystem = args.registries.globalRegistry.getRegister(zrender.ZRenderSystem).?;
         const cameraTransform = getCameraTransform(renderSystem.getWindowResolution());
-
+        this.updateKnifePos(args.time, args.registries);
         switch (this.gameState) {
             .slice => onSliceFrame(this, args, cameraTransform),
             .mainMenu => onMainMenuFrame(this, args),
@@ -477,8 +538,8 @@ const AcerolaGameJamSystem = struct {
 
             // If the fruit is near the cursor and the cursor is moving greater than a certain speed,
             // then that fruit gets deleted
-            const fruitCursorDistance = segmentSegmentDistance(this.cursorX, this.cursorY, this.lastCursorX, this.lastCursorY, fruit.fruit.xPos, fruit.fruit.yPos, fruit.fruit.lastXPos, fruit.fruit.lastYPos);
-            const cursorVelocity = this.cursorVelX * this.cursorVelX + this.cursorVelY * this.cursorVelY;
+            const fruitCursorDistance = segmentSegmentDistance(this.knifeX, this.knifeY, this.lastKnifeX, this.lastKnifeY, fruit.fruit.xPos, fruit.fruit.yPos, fruit.fruit.lastXPos, fruit.fruit.lastYPos);
+            const cursorVelocity = this.knifeVelX * this.knifeVelX + this.knifeVelY * this.knifeVelY;
             if(this.mainMenuCooldown < 0 and fruitCursorDistance < fruit.fruit.scale and cursorVelocity > 0.6) {
                 cutFruitToSpawn.append(fruit.*) catch @panic("Out of memory!");
                 fruitToRemove.append(entity) catch @panic("Out of memory!");
@@ -495,7 +556,7 @@ const AcerolaGameJamSystem = struct {
             renderComponent.uniforms = &fruit.uniforms;
             renderComponent.uniforms[0] = .{ .mat4 = zlmToZrenderMat4(transform) };
         }
-        // This is not the best way to make the slices persist from the main menu into slice but it works so who cares anyway
+        // Switching scene before spawning slices is not the best way to make the slices persist from the main menu into slice but it works so who cares anyway
         if(switchToNext){
             this.setupSlice(args.registries) catch @panic("failed to switch to slice scene");
         }
@@ -517,7 +578,6 @@ const AcerolaGameJamSystem = struct {
     }
 
     fn onSliceFrame(this: *@This(), args: zrender.OnFrameEventArgs, cameraTransform: zlm.Mat4) void {
-        this.timeSinceStart += args.delta;
         this.fruitSpawnCountown -= args.delta;
         var random = this.rand.random();
         // Every time @as(@floatFromInt) is needed, I am reminding you how silly this is
@@ -621,12 +681,12 @@ const AcerolaGameJamSystem = struct {
             // Also, mandatory note about Zig's silly float casting rules
             const w = @as(f32, @floatFromInt(i)) / knifeDotsPerUpdate;
             // lerp it backwards since this iterates away from the cursor.
-            const cursorX = this.cursorX * (1 - w) + this.cursorXLastUpdate * w;
-            const cursorY = this.cursorY * (1 - w) + this.cursorYLastUpdate * w;
+            const knifeX = this.knifeX * (1 - w) + this.knifeXLastUpdate * w;
+            const knifeY = this.knifeY * (1 - w) + this.knifeYLastUpdate * w;
             const currentKnifeData = &this.knifeData[this.currentKnifeIndex];
             currentKnifeData.number = @intCast(numKnifeParts - i);
-            currentKnifeData.x = cursorX;
-            currentKnifeData.y = cursorY;
+            currentKnifeData.x = knifeX;
+            currentKnifeData.y = knifeY;
             // increment
             this.currentKnifeIndex = @mod(this.currentKnifeIndex + 1, this.knifeUniforms.len);
         }
@@ -645,8 +705,8 @@ const AcerolaGameJamSystem = struct {
             this.knifeUniforms[i][0].mat4 = zlmToZrenderMat4(knifeTransform.mul(cameraTransform));
             data.number = @intCast(std.math.clamp(@as(isize, data.number) - knifeDotsPerUpdate, 0, numKnifeParts));
         }
-        this.cursorXLastUpdate = this.cursorX;
-        this.cursorYLastUpdate = this.cursorY;
+        this.knifeXLastUpdate = this.knifeX;
+        this.knifeYLastUpdate = this.knifeY;
     }
 
     fn updateSlices(this: *@This(), args: zrender.OnFrameEventArgs, deltaSeconds: f32, cameraTransform: zlm.Mat4) void {
@@ -707,11 +767,11 @@ const AcerolaGameJamSystem = struct {
             fruit.fruit.xPos += fruit.fruit.xVel * deltaSeconds;
             fruit.fruit.angle += fruit.fruit.aVel * deltaSeconds;
 
-            // If the fruit is near the cursor and the cursor is moving greater than a certain speed,
+            // If the fruit is near the knife and the knife is moving greater than a certain speed,
             // then that fruit gets deleted
-            const fruitCursorDistance = segmentSegmentDistance(this.cursorX, this.cursorY, this.lastCursorX, this.lastCursorY, fruit.fruit.xPos, fruit.fruit.yPos, fruit.fruit.lastXPos, fruit.fruit.lastYPos);
-            const cursorVelocity = this.cursorVelX * this.cursorVelX + this.cursorVelY * this.cursorVelY;
-            if(fruitCursorDistance < fruit.fruit.scale and cursorVelocity > 0.6) {
+            const fruitKnifeDistance = segmentSegmentDistance(this.knifeX, this.knifeY, this.lastKnifeX, this.lastKnifeY, fruit.fruit.xPos, fruit.fruit.yPos, fruit.fruit.lastXPos, fruit.fruit.lastYPos);
+            const knifeVelocity = this.knifeVelX * this.knifeVelX + this.knifeVelY * this.knifeVelY;
+            if(fruitKnifeDistance < fruit.fruit.scale and knifeVelocity > 0.6) {
                 cutFruitToSpawn.append(entity) catch @panic("Out of memory!");
                 fruitToRemove.append(entity) catch @panic("Out of memory!");
                 continue;
@@ -775,8 +835,8 @@ const AcerolaGameJamSystem = struct {
     fn spawnFruitSlice(this: *@This(), ecsRegistry: *ecs.Registry, fruit: *const FruitComponent, slice: u32) void {
         const entity = ecsRegistry.create();
         var fruitData = fruit.fruit;
-        fruitData.xVel += this.cursorVelX * 0.1;
-        fruitData.yVel += this.cursorVelY * 0.1;
+        fruitData.xVel += this.knifeVelX * 0.1;
+        fruitData.yVel += this.knifeVelY * 0.1;
         fruitData.xVel += this.rand.random().float(f32) * 2.0 - (2.0*0.5);
         ecsRegistry.add(entity, CutFruitComponent{
             .fruit = fruitData,
@@ -899,26 +959,36 @@ const AcerolaGameJamSystem = struct {
     }
 
     pub fn onMouseMove(this: *@This(), args: zrender.OnMouseMoveEventArgs) void {
-        const cursorDeltaTimeMicros: f32 = @floatFromInt(args.time - this.lastCursorUpdate);
-        const cursorDeltaTime = cursorDeltaTimeMicros / std.time.us_per_s;
-        // If the delta is too small, then then ignore this movement
-        if(cursorDeltaTimeMicros < 1000) return;
-        // vec4 so it can be transformed by the camera
-        const posInPixels = zlm.Vec4{.x = @floatFromInt(args.x), .y = @floatFromInt(args.y), .z = 0, .w = 1};
-        const renderSystem = args.registries.globalRegistry.getRegister(zrender.ZRenderSystem).?;
-        const resolution = renderSystem.getWindowResolution();
-        // First, convert pixels to screen space
-        const posInScreen = posInPixels.div(zlm.Vec4.new(@floatFromInt(resolution.width), @floatFromInt(resolution.height), 1, 1)).sub(zlm.Vec4.new(0.5, 0.5, 0, 0)).mul(zlm.Vec4.new(2, -2, 1, 1));
-        const inverseCameraMatrix = getCameraTransform(resolution).invert() orelse unreachable;
-        const posInWorld = posInScreen.transform(inverseCameraMatrix);
+        // If the cursor is locked, integrate based on the deltas.
+        if(kinc.kinc_mouse_is_locked()){
+            this.cursorX += args.deltax;
+            this.cursorY += args.deltay;
+        } else {
+            this.cursorX = args.x;
+            this.cursorY = args.y;
+        }
         this.lastCursorUpdate = args.time;
-        this.lastCursorX = this.cursorX;
-        this.lastCursorY = this.cursorY;
-        this.cursorX = posInWorld.x;
-        this.cursorY = posInWorld.y;
-        this.cursorVelX = (this.cursorX - this.lastCursorX) / cursorDeltaTime;
-        this.cursorVelY = (this.cursorY - this.lastCursorY) / cursorDeltaTime;
     }
+
+    fn updateKnifePos(this: *@This(), time: i64, registries: *zengine.RegistrySet) void {
+        const cursorDeltaTimeMicros: f32 = @floatFromInt(time - this.lastCursorUpdate);
+        const cursorDeltaTime = cursorDeltaTimeMicros / std.time.us_per_s;
+        const renderSystem = registries.globalRegistry.getRegister(zrender.ZRenderSystem).?;
+        const resolution = renderSystem.getWindowResolution();
+        const cameraMatrix = getCameraTransform(resolution);
+        const inverseCameraMatrix = cameraMatrix.invert() orelse unreachable;
+
+        var posInPixels = zlm.Vec4{.x = @floatFromInt(this.cursorX), .y = @floatFromInt(this.cursorY), .z = 0, .w = 1};
+        const posInScreen = posInPixels.div(zlm.Vec4.new(@floatFromInt(resolution.width), @floatFromInt(resolution.height), 1, 1)).sub(zlm.Vec4.new(0.5, 0.5, 0, 0)).mul(zlm.Vec4.new(2, -2, 1, 1));
+        const posInWorld = posInScreen.transform(inverseCameraMatrix).transform(levels[this.level].abberation);
+        this.lastKnifeX = this.knifeX;
+        this.lastKnifeY = this.knifeY;
+        this.knifeX = posInWorld.x;
+        this.knifeY = posInWorld.y;
+        this.knifeVelX = (this.knifeX - this.lastKnifeX) / cursorDeltaTime;
+        this.knifeVelY = (this.knifeY - this.lastKnifeY) / cursorDeltaTime;
+    }
+
     pub fn systemDeinitGlobal(this: *@This(), registries: *zengine.RegistrySet) void {
         _ = registries;
         _ = this;
@@ -959,6 +1029,15 @@ const AcerolaGameJamSystem = struct {
             [_]f32{ m.m03, m.m13, m.m23, m.m33 },
         } };
     }
+
+    fn createAbberationTransform(offsetX: f32, offsetY: f32, scaleX: f32, scaleY: f32, rotation: f32) zlm.Mat4 {
+        var t = zlm.Mat4.identity;
+        t = t.mul(zlm.Mat4.createTranslationXYZ(offsetX, offsetY, 0));
+        t = t.mul(zlm.Mat4.createScale(scaleX, scaleY, 1));
+        t = t.mul(zlm.Mat4.createAngleAxis(zlm.Vec3.unitZ, rotation));
+        return t;
+    }
+
     allocator: std.mem.Allocator,
     // If this wasn't a jam, I would write an actual asset manager instead of just plonking them here
     quadMesh: zrender.MeshHandle,
@@ -976,21 +1055,24 @@ const AcerolaGameJamSystem = struct {
     fgUniforms: [2]zrender.Uniform,
     tutorial1Entity: ecs.Entity,
     tutorial1Uniforms: [2]zrender.Uniform,
-    // Cursor position in world space.
-    cursorX: f32,
-    cursorY: f32,
-    // the cursor position last frame
+    // cursor pos in pixel space
+    cursorX: i32,
+    cursorY: i32,
+    // knife position in world space.
+    knifeX: f32,
+    knifeY: f32,
+    // the knife position last frame
     // TODO: make sure onCursorMove is only called once per frame
-    lastCursorX: f32,
-    lastCursorY: f32,
-    // This is used for the cursor trail knife thingy
-    cursorXLastUpdate: f32,
-    cursorYLastUpdate: f32,
-    // the frame time when the cursor was last updated
+    lastKnifeX: f32,
+    lastKnifeY: f32,
+    // This is used for the knife trail knife thingy
+    knifeXLastUpdate: f32,
+    knifeYLastUpdate: f32,
+    // the frame time when the knife was last updated
     lastCursorUpdate: i64,
-    // Cursor speed in world space / second
-    cursorVelX: f32,
-    cursorVelY: f32,
+    // knife speed in world space / second
+    knifeVelX: f32,
+    knifeVelY: f32,
     // I'm supposed to use the ECS, and define the knifes behavior separately.
     // However this is a game jam so I don't really care.
     knifeEntities: [numKnifeParts]ecs.Entity,
@@ -1001,7 +1083,6 @@ const AcerolaGameJamSystem = struct {
     score: u64,
     numberTextures: [10]zrender.TextureHandle,
     scoreEntities: std.ArrayList(ecs.Entity),
-    // WORKING
     // the current level
     level: usize,
     // how many fruit of each type to spawn.
