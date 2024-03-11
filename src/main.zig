@@ -967,6 +967,10 @@ const AcerolaGameJamSystem = struct {
             this.cursorX = args.x;
             this.cursorY = args.y;
         }
+        const resolution = args.registries.globalRegistry.getRegister(zrender.ZRenderSystem).?.getWindowResolution();
+        // clamp
+        this.cursorX = std.math.clamp(this.cursorX, 0, @as(i32, @intCast(resolution.width)));
+        this.cursorY = std.math.clamp(this.cursorY, 0, @as(i32, @intCast(resolution.height)));
         this.lastCursorUpdate = args.time;
     }
 
