@@ -39,16 +39,52 @@ const levels = [_]Level{
     },
     // Level two: a single bomb
     .{
-        .length = 5 * std.time.us_per_s,
+        .length = 10 * std.time.us_per_s,
         .fruits = &[_]FruitType{.bomb},
-        .fruitNums = &[_]u32{1},
+        .fruitNums = &[_]u32{2},
     },
     // A mix of bombs and tomatos for the next 2 minutes
     .{
         .length = 120 * std.time.us_per_s,
         .fruits = &[_]FruitType{.bomb, .tomato},
         .fruitNums = &[_]u32{10, 90},
-    }
+    },
+    .{
+        .length = 120 * std.time.us_per_s,
+        .fruits = &[_]FruitType{.bomb, .tomato},
+        .fruitNums = &[_]u32{40, 150},
+    },
+    .{
+        .length = 120 * std.time.us_per_s,
+        .fruits = &[_]FruitType{.bomb, .tomato},
+        .fruitNums = &[_]u32{60, 200},
+    },
+    .{
+        .length = 120 * std.time.us_per_s,
+        .fruits = &[_]FruitType{.bomb, .tomato},
+        .fruitNums = &[_]u32{100, 150},
+    },
+    .{
+        .length = 120 * std.time.us_per_s,
+        .fruits = &[_]FruitType{.bomb, .tomato},
+        .fruitNums = &[_]u32{120, 140},
+    },
+    .{
+        .length = 120 * std.time.us_per_s,
+        .fruits = &[_]FruitType{.bomb, .tomato},
+        .fruitNums = &[_]u32{170, 100},
+    },
+    .{
+        .length = 120 * std.time.us_per_s,
+        .fruits = &[_]FruitType{.bomb, .tomato},
+        .fruitNums = &[_]u32{180, 40},
+    },
+    // This last level is really really really long, in hopes that players either die or give up at some point in the 4 years it takes this level to run.
+    .{
+        .length = 120000000 * std.time.us_per_s,
+        .fruits = &[_]FruitType{.bomb, .tomato},
+        .fruitNums = &[_]u32{200000000, 30000000},
+    },
 };
 
 // A component for a quad that stays in place in worldspace
@@ -501,22 +537,37 @@ const AcerolaGameJamSystem = struct {
             }
             if(!foundFruitIndex) @panic("oh no!");
             this.levelFruitNums.items[randomFruitIndex] -= 1;
+            const newFruitXPos = random.float(f32) * 1.5 - (1.5 / 2.0);
+            const newFruitYPos = -1.0;
+            const newFruitXTarget = random.float(f32) * 1.5 - (1.5 / 2.0);
+            // Decreasing this value will make the fruit tend towards the edge while increasing it will make fruit tend towards the top.
+            const newFruitYTarget = 0.9;
+            const newFruitVelocity = 2.5;
+            // Make a vector that points from newFruitPos to newFruitTarget that has a magnitude of newFruitVelocity
+            var newfruitXVelocity: f32 = newFruitXTarget - newFruitXPos;
+            var newfruitYVelocity: f32 = newFruitYTarget - newFruitYPos;
+            const newFruitVelocityMagnitude = @sqrt(newfruitXVelocity * newfruitXVelocity + newfruitYVelocity * newfruitYVelocity);
+            newfruitXVelocity *= newFruitVelocity / newFruitVelocityMagnitude;
+            newfruitYVelocity *= newFruitVelocity / newFruitVelocityMagnitude;
             this.spawnFruit(args.registries, this.levelFruitTypes.items[randomFruitIndex], Fruit {
                 .angle = 0,
                 .aVel = random.float(f32) * 3.0 - (3.0 / 2.0),
                 .scale = 0.07,
-                .xPos = random.float(f32) * 2 - 1,
-                .yPos = -1.5,
-                // These are only used for detecting when the fruit is cut so it doesn't matter they don't match
-                .lastXPos = 0,
-                .lastYPos = -1.5,
-                // TODO: bias this towards the middle of the screen
-                .xVel = random.float(f32) * 1.0 - (1.0 / 2.0),
-                // TODO: randomize vertical velocity
-                .yVel = 3,
+                .xPos = newFruitXPos,
+                .yPos = newFruitYPos,
+                // These are only used for detecting when the fruit is cut so it doesn't really matter what these are
+                .lastXPos = newFruitXPos,
+                .lastYPos = newFruitXPos,
+                .xVel = newfruitXVelocity,
+                .yVel = newfruitYVelocity,
             });
             this.fruitSpawnCountown += this.levelFruitCooldownStart;
             std.debug.print("Level {} Spawned a {}, there are {} left.\n", .{this.level, this.levelFruitTypes.items[randomFruitIndex], this.levelFruitNums.items[randomFruitIndex]});
+            // If this fruit type ran out, remove it
+            if(this.levelFruitNums.items[randomFruitIndex] == 0) {
+                _ = this.levelFruitTypes.swapRemove(randomFruitIndex);
+                _ = this.levelFruitNums.swapRemove(randomFruitIndex);
+            }
             // If there are no fruit left, go to the next level
             if(fruitLeftInLevel <= 1) {
                 this.setLevel(this.level+1);
