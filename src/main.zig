@@ -220,12 +220,16 @@ const AcerolaGameJamSystem = struct {
         _ = settings;
     }
 
-    fn setupSlice(this: *@This(), registries: *zengine.RegistrySet) !void {
-        // clear out the ECS completely.
-        // For some aboninable reason there is no 'clear' method in the ecs
-        // so it's deconstructed and reconstructed instead
+    fn clearEcs(this: *@This(), registries: *zengine.RegistrySet) !void {
+        // this is an abomination
         registries.globalEcsRegistry.deinit();
         registries.globalEcsRegistry = ecs.Registry.init(this.allocator);
+        this.scoreEntities.clearRetainingCapacity();
+        try this.updateScoreDisplay(registries);
+    }
+
+    fn setupSlice(this: *@This(), registries: *zengine.RegistrySet) !void {
+        try this.clearEcs(registries);
         this.gameState = .slice;
         this.score = 0;
         this.setLevel(0);
@@ -327,6 +331,7 @@ const AcerolaGameJamSystem = struct {
     }
 
     fn setupMainMenu(this: *@This(), registries: *zengine.RegistrySet) !void {
+        try this.clearEcs(registries);
         this.gameState = .mainMenu;
         try this.setupEcs(registries);
         this.spawnFruit(registries, .tomato, Fruit{
@@ -539,9 +544,9 @@ const AcerolaGameJamSystem = struct {
             this.levelFruitNums.items[randomFruitIndex] -= 1;
             const newFruitXPos = random.float(f32) * 1.5 - (1.5 / 2.0);
             const newFruitYPos = -1.0;
-            const newFruitXTarget = random.float(f32) * 1.5 - (1.5 / 2.0);
+            const newFruitXTarget = random.float(f32) * 1.2 - (1.2 / 2.0);
             // Decreasing this value will make the fruit tend towards the edge while increasing it will make fruit tend towards the top.
-            const newFruitYTarget = 0.9;
+            const newFruitYTarget = 1.0;
             const newFruitVelocity = 2.5;
             // Make a vector that points from newFruitPos to newFruitTarget that has a magnitude of newFruitVelocity
             var newfruitXVelocity: f32 = newFruitXTarget - newFruitXPos;
@@ -712,20 +717,28 @@ const AcerolaGameJamSystem = struct {
             renderComponent.uniforms = &fruit.uniforms;
             renderComponent.uniforms[0] = .{ .mat4 = zlmToZrenderMat4(transform) };
         }
+        var switchToNextScene = false;
         for(cutFruitToSpawn.items) |entity| {
             const fruit = args.registries.globalEcsRegistry.get(FruitComponent, entity);
             this.spawnFruitSlice(&args.registries.globalEcsRegistry, fruit, 1);
             this.spawnFruitSlice(&args.registries.globalEcsRegistry, fruit, 2);
             switch (fruit.t) {
                 .tomato => this.score += 100,
-                // TODO: play some kind of explode animation and go back to the main menu
-                .bomb => this.score = 0,
+                // TODO: play some kind of explode animation
+                .bomb => {
+                    switchToNextScene = true;
+                },
                 .count => {},
             }
             this.updateScoreDisplay(args.registries) catch unreachable;
         }
         for(fruitToRemove.items) |entity| {
             args.registries.globalEcsRegistry.destroy(entity);
+        }
+        // Lol I don't know if this is the right panic function,
+        // But I'm trying to avoid @Panic because it's not the recomended way to panic in Zig.
+        if(switchToNextScene){
+            this.setupMainMenu(args.registries) catch |err| std.builtin.panicUnwrapError(null, err);
         }
     }
 
